@@ -63,6 +63,10 @@ function normalizeRef(ref) {
         .toLowerCase();
 }
 
+function isDynamicRef(ref = "") {
+    return /\$\{[^}]+\}|\{\{[^}]+\}\}|<%[=%-]?[\s\S]+?%>|@\{[^}]+\}|\+\s*["'`]|["'`]\s*\+/.test(ref);
+}
+
 function collectReferencedImages(content) {
     const refs = new Set();
     let match;
@@ -71,6 +75,7 @@ function collectReferencedImages(content) {
     while ((match = IMAGE_REF_RE.exec(content)) !== null) {
         const raw = match[1] || match[2] || match[3];
         if (!raw) continue;
+        if (isDynamicRef(raw)) continue;
         const normalized = normalizeRef(raw);
         if (!normalized) continue;
         refs.add(normalized);
@@ -102,18 +107,80 @@ function stripResponsiveAttrs(content) {
         .replace(/\s+sizes\s*=\s*(".*?"|'.*?'|[^\s>]+)/gi, "");
 }
 
-function replaceImageRefs(content, exactRewrites, basenameRewrites) {
-    return content.replace(/(?<full>(?<path>[^"'`\s)<>]+?)\.(?<ext>png|jpe?g|gif)(?<suffix>[?#][^"'`\s)]*)?)(?=$|["'`\s),>])/gi, (match, _full, _path, _ext, _suffix, _offset, _input, groups) => {
-        const pathPart = groups?.path ?? "";
-        const extPart = groups?.ext ?? "";
-        const suffixPart = groups?.suffix ?? "";
-        const normalized = normalizeRef(`${pathPart}.${extPart}`);
+function replaceImageRefs(content, exactRewrites, basenameRewrites, onSkip) {
+    const resolveReplacement = rawPath => {
+        if (isDynamicRef(rawPath)) {
+            onSkip?.(rawPath, "Пропущена динамическая ссылка");
+            return null;
+        }
+        const [pathOnly, suffix = ""] = rawPath.split(/([?#].*)/, 2);
+        const normalized = normalizeRef(pathOnly);
         const replacement = exactRewrites.get(normalized) ?? basenameRewrites.get(basename(normalized));
         if (!replacement) {
-            return match;
+            return null;
         }
-        return `${replacement}${suffixPart}`;
-    });
+        return `${replacement}${suffix}`;
+    };
+
+    let updated = content.replace(
+        /((?:src|href|poster|content|data-src|data-original|data-image|data-lazy-src)\s*=\s*["'])([^"']+\.(?:png|jpe?g|gif|webp)(?:[?#][^"']*)?)(["'])/gi,
+        (match, prefix, rawPath, suffix) => {
+            const replacement = resolveReplacement(rawPath);
+            return replacement ? `${prefix}${replacement}${suffix}` : match;
+        }
+    );
+
+    updated = updated.replace(
+        /((?:srcset|imagesrcset|data-srcset)\s*=\s*["'])([^"']+)(["'])/gi,
+        (match, prefix, rawList, suffix) => {
+            const rewritten = rawList.replace(
+                /([^,\s]+?\.(?:png|jpe?g|gif|webp)(?:[?#][^,\s]+)?)(\s+\d+(?:\.\d+)?[wx])?/gi,
+                (entryMatch, rawPath, descriptor = "") => {
+                    const replacement = resolveReplacement(rawPath);
+                    return replacement ? `${replacement}${descriptor}` : entryMatch;
+                }
+            );
+            return `${prefix}${rewritten}${suffix}`;
+        }
+    );
+
+    updated = updated.replace(
+        /(url\(\s*['"]?)([^'")]+\.(?:png|jpe?g|gif|webp)(?:[?#][^'")]+)?)(['"]?\s*\))/gi,
+        (match, prefix, rawPath, suffix) => {
+            const replacement = resolveReplacement(rawPath);
+            return replacement ? `${prefix}${replacement}${suffix}` : match;
+        }
+    );
+
+    updated = updated.replace(
+        /((?:image-set|-webkit-image-set)\(\s*)([\s\S]*?)(\))/gi,
+        (match, prefix, body, suffix) => {
+            const rewritten = body.replace(
+                /(url\(\s*['"]?)([^'")]+\.(?:png|jpe?g|gif|webp)(?:[?#][^'")]+)?)(['"]?\s*\))/gi,
+                (innerMatch, innerPrefix, rawPath, innerSuffix) => {
+                    const replacement = resolveReplacement(rawPath);
+                    return replacement ? `${innerPrefix}${replacement}${innerSuffix}` : innerMatch;
+                }
+            ).replace(
+                /(^|[\s,])(['"]?)([^'",\s)]+?\.(?:png|jpe?g|gif|webp)(?:[?#][^'",\s)]+)?)(\2)(?=\s+\d+(?:\.\d+)?x|[\s,)]|$)/gi,
+                (innerMatch, lead, quote, rawPath, endQuote) => {
+                    const replacement = resolveReplacement(rawPath);
+                    return replacement ? `${lead}${quote}${replacement}${endQuote}` : innerMatch;
+                }
+            );
+            return `${prefix}${rewritten}${suffix}`;
+        }
+    );
+
+    updated = updated.replace(
+        /((?:^|["'`(\s=:/\\]))([^"'`\s)<>]+?\.(?:png|jpe?g|gif|webp)(?:[?#][^"'`\s)]*)?)(?=$|["'`\s),>])/gi,
+        (match, prefix, rawPath) => {
+            const replacement = resolveReplacement(rawPath);
+            return replacement ? `${prefix}${replacement}` : match;
+        }
+    );
+
+    return updated;
 }
 
 function buildBasenameRewriteMap(exactRewrites) {
@@ -286,7 +353,11 @@ async function cmdOptimize(workDir) {
     for (const codeFile of codeFiles) {
         const content = await readFile(codeFile, "utf8").catch(() => null);
         if (!content) continue;
-        let updated = replaceImageRefs(content, exactRewrites, basenameRewrites);
+        const skippedRefs = new Map();
+        let updated = replaceImageRefs(content, exactRewrites, basenameRewrites, (rawPath, reason) => {
+            if (!rawPath) return;
+            skippedRefs.set(`${reason}: ${rawPath}`, { rawPath, reason });
+        });
         updated = stripResponsiveAttrs(updated);
         for (const ref of collectReferencedImages(updated)) {
             finalReferencedImages.add(ref);
@@ -294,6 +365,16 @@ async function cmdOptimize(workDir) {
         if (updated !== content) {
             await writeFile(codeFile, updated, "utf8");
             replacedFiles++;
+        }
+        if (skippedRefs.size > 0) {
+            const relCodeFile = relative(workDir, codeFile).replace(/\\/g, "/");
+            for (const { rawPath, reason } of skippedRefs.values()) {
+                report.push({
+                    type: "error",
+                    file: relCodeFile,
+                    message: `${reason}: ${rawPath}`
+                });
+            }
         }
     }
 
