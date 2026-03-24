@@ -905,7 +905,7 @@ export default function App() {
 
         {phase === "batchDone" && (
           <div className="done-state">
-            <div className="done-icon">вњ“</div>
+            <div className="done-icon">✓</div>
             <p className="done-title">{quickSummaryTitle}</p>
             <p className="done-hint">{quickSummaryHint}</p>
             <div className="result-summary batch-summary">
