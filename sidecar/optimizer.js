@@ -4,6 +4,7 @@
 import { readdir, stat, readFile, writeFile, unlink, mkdir, cp } from "fs/promises";
 import { join, extname, relative, basename, dirname } from "path";
 import { createRequire } from "module";
+import { createHash } from "crypto";
 
 const require = createRequire(import.meta.url);
 
@@ -11,20 +12,31 @@ let sharp, AdmZip;
 try {
     sharp = require("sharp");
 } catch {
-    emit({ type: "error", message: "sharp not installed. Run: npm install sharp" });
+    emit({ type: "error", message: toRussianError("sharp not installed. Run: npm install sharp") });
     process.exit(1);
 }
 try {
     AdmZip = require("adm-zip");
 } catch {
-    emit({ type: "error", message: "adm-zip not installed. Run: npm install adm-zip" });
+    emit({ type: "error", message: toRussianError("adm-zip not installed. Run: npm install adm-zip") });
     process.exit(1);
 }
 
-const [, , command, arg1, arg2] = process.argv;
+const [, , command, arg1, arg2, ...extraArgs] = process.argv;
 
 function emit(obj) {
     process.stdout.write(JSON.stringify(obj) + "\n");
+}
+
+function toRussianError(message = "") {
+    return String(message)
+        .replace("sharp not installed. Run: npm install sharp", "Не установлен sharp. Выполни: npm install sharp")
+        .replace("adm-zip not installed. Run: npm install adm-zip", "Не установлен adm-zip. Выполни: npm install adm-zip")
+        .replace("Unknown command", "Неизвестная команда")
+        .replace(/Skipped GIF -> WebP because output is larger \((\d+) -> (\d+) bytes\)/, "GIF пропущен: WebP получился больше ($1 -> $2 байт)")
+        .replace(/EBUSY/g, "Файл занят другим процессом")
+        .replace(/EPERM/g, "Нет прав на операцию")
+        .replace(/ENOENT/g, "Файл или папка не найдены");
 }
 
 const CODE_EXTS = new Set([
@@ -90,18 +102,40 @@ function stripResponsiveAttrs(content) {
         .replace(/\s+sizes\s*=\s*(".*?"|'.*?'|[^\s>]+)/gi, "");
 }
 
-function replaceImageRefs(content, convertedKeys) {
+function replaceImageRefs(content, exactRewrites, basenameRewrites) {
     return content.replace(/(?<full>(?<path>[^"'`\s)<>]+?)\.(?<ext>png|jpe?g|gif)(?<suffix>[?#][^"'`\s)]*)?)(?=$|["'`\s),>])/gi, (match, _full, _path, _ext, _suffix, _offset, _input, groups) => {
         const pathPart = groups?.path ?? "";
         const extPart = groups?.ext ?? "";
         const suffixPart = groups?.suffix ?? "";
         const normalized = normalizeRef(`${pathPart}.${extPart}`);
-        const nameOnly = basename(normalized);
-        if (!convertedKeys.has(normalized) && !convertedKeys.has(nameOnly)) {
+        const replacement = exactRewrites.get(normalized) ?? basenameRewrites.get(basename(normalized));
+        if (!replacement) {
             return match;
         }
-        return `${pathPart}.webp${suffixPart}`;
+        return `${replacement}${suffixPart}`;
     });
+}
+
+function buildBasenameRewriteMap(exactRewrites) {
+    const counts = new Map();
+    for (const key of exactRewrites.keys()) {
+        const name = basename(key);
+        counts.set(name, (counts.get(name) ?? 0) + 1);
+    }
+
+    const basenameRewrites = new Map();
+    for (const [key, value] of exactRewrites.entries()) {
+        const name = basename(key);
+        if (counts.get(name) === 1) {
+            basenameRewrites.set(name, value);
+        }
+    }
+
+    return basenameRewrites;
+}
+
+function hashBuffer(buffer) {
+    return createHash("sha1").update(buffer).digest("hex");
 }
 
 async function safeUnlink(filePath, retries = 6) {
@@ -129,6 +163,9 @@ async function cmdUnzip(zipPath, workDir) {
 }
 
 async function cmdOptimize(workDir) {
+    const removeUnused = extraArgs.includes("--remove-unused");
+    const dedupeImages = extraArgs.includes("--dedupe-images");
+
     emit({ type: "status", message: "Scanning files..." });
 
     const allFiles = await walkDir(workDir);
@@ -152,22 +189,9 @@ async function cmdOptimize(workDir) {
     }
 
     emit({ type: "status", message: "Analysing code references..." });
-    const referencedImages = new Set();
-    for (const codeFile of codeFiles) {
-        const content = await readFile(codeFile, "utf8").catch(() => "");
-        for (const ref of collectReferencedImages(content)) {
-            referencedImages.add(ref);
-        }
-    }
-
-    const imageKeyVariants = imgPath => {
-        const rel = relative(workDir, imgPath).replace(/\\/g, "/").toLowerCase();
-        return [rel, basename(rel)];
-    };
-
     const toConvert = convertibleFiles;
     const toDelete = [];
-    const convertedKeys = new Set();
+    const exactRewrites = new Map();
 
     emit({ type: "classify_done", toConvert: toConvert.length, toDelete: toDelete.length });
 
@@ -198,7 +222,7 @@ async function cmdOptimize(workDir) {
                 report.push({
                     type: "error",
                     file: rel,
-                    message: `Skipped GIF -> WebP because output is larger (${originalSize} -> ${newSize} bytes)`
+                    message: toRussianError(`Skipped GIF -> WebP because output is larger (${originalSize} -> ${newSize} bytes)`)
                 });
                 done++;
                 emit({ type: "progress", done, total, percent: total ? Math.round((done / total) * 100) : 100, file: rel });
@@ -208,9 +232,8 @@ async function cmdOptimize(workDir) {
             const saved = originalSize - newSize;
             savedBytes += saved;
             await safeUnlink(imgPath);
-            for (const key of imageKeyVariants(imgPath)) {
-                convertedKeys.add(key);
-            }
+            const relWebp = relative(workDir, out).replace(/\\/g, "/");
+            exactRewrites.set(normalizeRef(rel), relWebp);
             report.push({
                 type: "converted",
                 file: rel,
@@ -221,26 +244,88 @@ async function cmdOptimize(workDir) {
                 savedPercent: Math.round((saved / originalSize) * 100)
             });
         } catch (err) {
-            report.push({ type: "error", file: rel, message: err.message });
+            report.push({ type: "error", file: rel, message: toRussianError(err.message) });
         }
         done++;
         emit({ type: "progress", done, total, percent: total ? Math.round((done / total) * 100) : 100, file: rel });
     }
 
+    if (dedupeImages) {
+        emit({ type: "status", message: "Finding duplicate images..." });
+        const currentFiles = await walkDir(workDir);
+        const currentImages = currentFiles.filter(filePath => IMAGE_EXTS.has(extname(filePath).toLowerCase()) || extname(filePath).toLowerCase() === ".webp");
+        const seenHashes = new Map();
+
+        for (const imgPath of currentImages) {
+            const rel = relative(workDir, imgPath).replace(/\\/g, "/");
+            const buffer = await readFile(imgPath);
+            const hash = hashBuffer(buffer);
+            const original = seenHashes.get(hash);
+
+            if (!original) {
+                seenHashes.set(hash, { path: imgPath, rel, size: buffer.length });
+                continue;
+            }
+
+            await safeUnlink(imgPath);
+            exactRewrites.set(normalizeRef(rel), original.rel);
+            report.push({
+                type: "deleted",
+                file: rel,
+                srcFormat: extname(imgPath).slice(1).toUpperCase(),
+                originalSize: buffer.length,
+                message: `Дубликат объединен с ${original.rel}`
+            });
+        }
+    }
+
     emit({ type: "status", message: "Updating code references..." });
+    const basenameRewrites = buildBasenameRewriteMap(exactRewrites);
     let replacedFiles = 0;
+    const finalReferencedImages = new Set();
     for (const codeFile of codeFiles) {
         const content = await readFile(codeFile, "utf8").catch(() => null);
         if (!content) continue;
-        let updated = replaceImageRefs(content, convertedKeys);
+        let updated = replaceImageRefs(content, exactRewrites, basenameRewrites);
         updated = stripResponsiveAttrs(updated);
+        for (const ref of collectReferencedImages(updated)) {
+            finalReferencedImages.add(ref);
+        }
         if (updated !== content) {
             await writeFile(codeFile, updated, "utf8");
             replacedFiles++;
         }
     }
 
-    emit({ type: "done", converted: toConvert.length, deleted: toDelete.length, replacedFiles, savedBytes, report });
+    if (removeUnused) {
+        emit({ type: "status", message: "Removing unused images..." });
+        const currentFiles = await walkDir(workDir);
+        const currentImages = currentFiles.filter(filePath => IMAGE_EXTS.has(extname(filePath).toLowerCase()) || extname(filePath).toLowerCase() === ".webp");
+
+        for (const imgPath of currentImages) {
+            const rel = relative(workDir, imgPath).replace(/\\/g, "/");
+            const normalizedRel = normalizeRef(rel);
+            const normalizedName = basename(normalizedRel);
+            if (finalReferencedImages.has(normalizedRel) || finalReferencedImages.has(normalizedName)) {
+                continue;
+            }
+
+            const originalSize = (await stat(imgPath)).size;
+            await safeUnlink(imgPath);
+            report.push({
+                type: "deleted",
+                file: rel,
+                srcFormat: extname(imgPath).slice(1).toUpperCase(),
+                originalSize,
+                message: "Не используется в коде"
+            });
+            savedBytes += originalSize;
+        }
+    }
+
+    const deletedCount = report.filter(item => item.type === "deleted").length;
+    const convertedCount = report.filter(item => item.type === "converted").length;
+    emit({ type: "done", converted: convertedCount, deleted: deletedCount, replacedFiles, savedBytes, report });
 }
 
 async function cmdRezip(workDir, outputZipPath) {
@@ -277,11 +362,11 @@ async function cmdCopyOut(workDir, outputDir) {
         else if (command === "rezip") await cmdRezip(arg1, arg2);
         else if (command === "copyout") await cmdCopyOut(arg1, arg2);
         else {
-            emit({ type: "error", message: `Unknown command: ${command}` });
+            emit({ type: "error", message: toRussianError(`Unknown command: ${command}`) });
             process.exit(1);
         }
     } catch (err) {
-        emit({ type: "error", message: err.message });
+        emit({ type: "error", message: toRussianError(err.message) });
         process.exit(1);
     }
 })();

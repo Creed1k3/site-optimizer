@@ -5,7 +5,7 @@ import "./App.css";
 
 type InputMode = "zip" | "folder";
 type ExportMode = "zip" | "folder";
-type Phase = "idle" | "preparing" | "running" | "reviewing" | "exporting" | "done" | "error";
+type Phase = "idle" | "preparing" | "running" | "reviewing" | "exporting" | "done" | "error" | "batching" | "batchDone";
 type ReportTab = "converted" | "deleted" | "errors";
 type Locale = "ru" | "en";
 
@@ -40,6 +40,14 @@ interface FloatingFile {
   name: string;
   x: number;
   y: number;
+}
+
+interface BatchSummaryItem {
+  input: string;
+  output?: string;
+  success: boolean;
+  savedBytes?: number;
+  error?: string;
 }
 
 const translations = {
@@ -184,6 +192,7 @@ function FolderIcon() {
 }
 
 export default function App() {
+  const launchModeRef = useRef<"normal" | "quick">("normal");
   const [locale, setLocale] = useState<Locale>(() => {
     if (typeof window === "undefined") return "ru";
     const saved = window.localStorage.getItem("site-optimizer-locale");
@@ -203,7 +212,16 @@ export default function App() {
   const [floatingFiles, setFloatingFiles] = useState<FloatingFile[]>([]);
   const [currentFile, setCurrentFile] = useState<string>("");
   const [isLanguageOpen, setIsLanguageOpen] = useState(false);
+  const [removeUnused, setRemoveUnused] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false;
+    return window.localStorage.getItem("site-optimizer-remove-unused") === "true";
+  });
+  const [dedupeImages, setDedupeImages] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false;
+    return window.localStorage.getItem("site-optimizer-dedupe-images") === "true";
+  });
   const [runtimeDebug, setRuntimeDebug] = useState<string[]>([]);
+  const [batchResults, setBatchResults] = useState<BatchSummaryItem[]>([]);
   const unlisten = useRef<(() => void) | null>(null);
   const floatCounter = useRef(0);
   const languageSwitcherRef = useRef<HTMLDivElement | null>(null);
@@ -214,6 +232,14 @@ export default function App() {
   }, [locale]);
 
   useEffect(() => {
+    window.localStorage.setItem("site-optimizer-remove-unused", String(removeUnused));
+  }, [removeUnused]);
+
+  useEffect(() => {
+    window.localStorage.setItem("site-optimizer-dedupe-images", String(dedupeImages));
+  }, [dedupeImages]);
+
+  useEffect(() => {
     let cancelled = false;
 
     (async () => {
@@ -222,6 +248,32 @@ export default function App() {
         if (!cancelled) setRuntimeDebug(debugLines);
       } catch {
         // ignore debug lookup failures
+      }
+
+      try {
+        const launchMode = await invoke<"normal" | "quick">("get_launch_mode");
+        launchModeRef.current = launchMode;
+      } catch {
+        // ignore launch mode lookup failures
+      }
+
+      try {
+        const launchPaths = await invoke<string[]>("get_launch_paths");
+        if (!launchPaths.length || cancelled) return;
+
+        const firstPath = launchPaths[0];
+        const isZip = firstPath.toLowerCase().endsWith(".zip");
+        setInputMode(isZip ? "zip" : "folder");
+        setInputPath(firstPath);
+
+        if (launchModeRef.current === "quick") {
+          window.setTimeout(() => {
+            void runQuickBatchFromPaths(launchPaths, isZip ? "zip" : "folder");
+          }, 160);
+        }
+        return;
+      } catch {
+        // ignore startup arg lookup failures
       }
 
       try {
@@ -256,6 +308,20 @@ export default function App() {
   const alternateLanguageLabel = alternateLocale === "ru"
     ? (locale === "ru" ? translations.ru.languageNative : translations.en.languageNative)
     : (locale === "ru" ? t.languageEnglish : translations.en.languageEnglish);
+  const extraCleanupTitle = locale === "ru" ? "Дополнительная очистка" : "Extra Cleanup";
+  const removeUnusedLabel = locale === "ru" ? "Удалять неиспользуемые картинки" : "Remove unused images";
+  const removeUnusedHint = locale === "ru"
+    ? "Опция осторожная: может затронуть нестандартные шаблоны и lazy-load."
+    : "Use carefully: custom templates and lazy-load setups may need review.";
+  const dedupeLabel = locale === "ru" ? "Удалять дубликаты изображений" : "Remove duplicate images";
+  const dedupeHint = locale === "ru"
+    ? "Дубликаты ищутся по содержимому файла и объединяются в один оригинал."
+    : "Duplicates are detected by file content and merged into a single original.";
+  const quickOptimizeLabel = locale === "ru" ? "Быстро оптимизировать пачку" : "Quick optimize batch";
+  const quickSummaryTitle = locale === "ru" ? "Пакетная оптимизация завершена" : "Batch optimization complete";
+  const quickSummaryHint = locale === "ru"
+    ? "Все выбранные сайты обработаны автоматически и сохранены рядом с исходниками."
+    : "All selected sites were processed automatically and saved next to the originals.";
 
   useEffect(() => {
     let unlistenDrop: (() => void) | null = null;
@@ -301,10 +367,65 @@ export default function App() {
     if (path) setInputPath(path);
   };
 
+  const pickBatchInputs = async () => {
+    const paths = inputMode === "zip"
+      ? await invoke<string[]>("open_zip_dialog_multi")
+      : await invoke<string[]>("open_folder_dialog_multi");
+    return paths.filter(Boolean);
+  };
+
   const getTabLabel = (tab: ReportTab) => {
     if (tab === "converted") return t.tabConverted;
     if (tab === "deleted") return t.tabDeleted;
     return t.tabErrors;
+  };
+
+  const optimizeSingleForBatch = async (path: string, mode: InputMode) => {
+    const dir = mode === "zip"
+      ? await invoke<string>("unzip_site", { zipPath: path })
+      : await invoke<string>("prepare_folder", { folderPath: path });
+
+    const donePromise = new Promise<DonePayload>((resolve, reject) => {
+      void (async () => {
+        const off = await listen<string>("optimizer_event", (event) => {
+          try {
+            const data = JSON.parse(event.payload);
+            switch (data.type) {
+              case "status":
+                setProgress((state) => ({ ...state, status: data.message }));
+                break;
+              case "progress":
+                if (data.file) spawnFloatingFile(data.file);
+                break;
+              case "done":
+                off();
+                resolve(data as DonePayload);
+                break;
+              case "error":
+                off();
+                reject(new Error(String(data.message)));
+                break;
+            }
+          } catch {
+            // ignore malformed sidecar messages
+          }
+        });
+      })();
+    });
+
+    await invoke("optimize_site", {
+      workDir: dir,
+      removeUnused,
+      dedupeImages
+    });
+    const donePayload = await donePromise;
+
+    const out = exportMode === "zip"
+      ? await invoke<string>("export_as_zip", { workDir: dir, originalPath: path })
+      : await invoke<string>("export_as_folder", { workDir: dir, originalPath: path });
+
+    await invoke("cleanup_work_dir", { workDir: dir });
+    return { out, donePayload };
   };
 
   const startListening = async () => {
@@ -389,7 +510,11 @@ export default function App() {
       setWorkDir(dir);
       setPhase("running");
       setProgress({ done: 0, total: 0, percent: 0, status: t.optimizerStarting });
-      await invoke("optimize_site", { workDir: dir });
+      await invoke("optimize_site", {
+        workDir: dir,
+        removeUnused,
+        dedupeImages
+      });
     } catch (error: any) {
       setErrorMsg(String(error));
       setPhase("error");
@@ -423,6 +548,61 @@ export default function App() {
     }
   };
 
+  const runQuickBatch = async () => {
+    const paths = await pickBatchInputs();
+    if (!paths.length) return;
+    await runQuickBatchFromPaths(paths, inputMode);
+  };
+
+  const runQuickBatchFromPaths = async (paths: string[], mode: InputMode) => {
+    setPhase("batching");
+    setBatchResults([]);
+    setResult(null);
+    setOutputPath(null);
+    setErrorMsg("");
+    setFloatingFiles([]);
+    setCurrentFile("");
+
+    const nextResults: BatchSummaryItem[] = [];
+
+    for (let index = 0; index < paths.length; index++) {
+      const currentPath = paths[index];
+      setInputPath(currentPath);
+      setInputMode(mode);
+      setProgress({
+        done: index,
+        total: paths.length,
+        percent: Math.round((index / paths.length) * 100),
+        status: `${index + 1}/${paths.length}: ${currentPath.split(/[\\/]/).pop() ?? currentPath}`
+      });
+
+      try {
+        const { out, donePayload } = await optimizeSingleForBatch(currentPath, mode);
+        nextResults.push({
+          input: currentPath,
+          output: out,
+          success: true,
+          savedBytes: donePayload.savedBytes
+        });
+      } catch (error: any) {
+        nextResults.push({
+          input: currentPath,
+          success: false,
+          error: String(error)
+        });
+      }
+    }
+
+    setBatchResults(nextResults);
+    setProgress({
+      done: nextResults.filter((item) => item.success).length,
+      total: nextResults.length,
+      percent: 100,
+      status: quickSummaryTitle
+    });
+    setPhase("batchDone");
+  };
+
   const reset = async () => {
     if (workDir) {
       try {
@@ -436,15 +616,19 @@ export default function App() {
     setWorkDir(null);
     setOutputPath(null);
     setResult(null);
+    setBatchResults([]);
     setErrorMsg("");
     setFloatingFiles([]);
     setCurrentFile("");
     setProgress({ done: 0, total: 0, percent: 0, status: "" });
   };
 
-  const stepIndex = { idle: 0, preparing: 0, running: 1, reviewing: 2, exporting: 3, done: 3, error: 0 };
+  const stepIndex = { idle: 0, preparing: 0, running: 1, reviewing: 2, exporting: 3, done: 3, error: 0, batching: 1, batchDone: 3 };
   const currentStep = stepIndex[phase] ?? 0;
   const filteredReport = result?.report.filter((item) => activeTab === "errors" ? item.type === "error" : item.type === activeTab) ?? [];
+  const batchSuccessCount = batchResults.filter((item) => item.success).length;
+  const batchErrorCount = batchResults.length - batchSuccessCount;
+  const batchSavedBytes = batchResults.reduce((sum, item) => sum + (item.savedBytes ?? 0), 0);
 
   return (
     <div className="app">
@@ -522,30 +706,62 @@ export default function App() {
               )}
             </div>
 
+            <div className="options-card">
+              <div className="options-card-title">{extraCleanupTitle}</div>
+
+              <label className="option-row">
+                <input
+                  type="checkbox"
+                  checked={removeUnused}
+                  onChange={(event) => setRemoveUnused(event.target.checked)}
+                />
+                <span className="option-copy">
+                  <span className="option-label">{removeUnusedLabel}</span>
+                  <span className="option-hint">{removeUnusedHint}</span>
+                </span>
+              </label>
+
+              <label className="option-row">
+                <input
+                  type="checkbox"
+                  checked={dedupeImages}
+                  onChange={(event) => setDedupeImages(event.target.checked)}
+                />
+                <span className="option-copy">
+                  <span className="option-label">{dedupeLabel}</span>
+                  <span className="option-hint">{dedupeHint}</span>
+                </span>
+              </label>
+            </div>
+
             <div className="actions">
               <button className="btn-primary" disabled={!inputPath} onClick={runAll}>
                 {inputMode === "zip" ? t.runZip : t.runFolder}
+              </button>
+              <button className="btn-ghost" onClick={runQuickBatch}>
+                {quickOptimizeLabel}
               </button>
             </div>
           </div>
         )}
 
-        {(phase === "preparing" || phase === "running" || phase === "exporting") && (
+        {(phase === "preparing" || phase === "running" || phase === "exporting" || phase === "batching") && (
           <div className="running running--full">
             <div className="running-label">
               {phase === "preparing" && (inputMode === "zip" ? t.phasePreparingZip : t.phasePreparingFolder)}
               {phase === "running" && t.phaseRunning}
               {phase === "exporting" && (exportMode === "zip" ? t.phaseExportZip : t.phaseExportFolder)}
+              {phase === "batching" && quickOptimizeLabel}
             </div>
             <div className="running-status">{progress.status}</div>
             <div className="progress-track">
               <div className="progress-fill" style={{ width: (phase === "preparing" || phase === "exporting") ? "100%" : `${progress.percent}%` }} />
             </div>
             <div className="progress-label">
-              {phase === "running" && progress.total > 0 ? t.filesProgress(progress.done, progress.total, progress.percent) : ""}
+              {(phase === "running" || phase === "batching") && progress.total > 0 ? t.filesProgress(progress.done, progress.total, progress.percent) : ""}
             </div>
 
-            {phase === "running" && progress.total > 0 && (
+            {(phase === "running" || phase === "batching") && progress.total > 0 && (
               <div className="running-stats">
                 <div className="running-stat">
                   <span className="running-stat-value">{progress.total}</span>
@@ -562,7 +778,7 @@ export default function App() {
               </div>
             )}
 
-            {phase === "running" && (
+            {(phase === "running" || phase === "batching") && (
               <div className="floating-arena">
                 {floatingFiles.map((file) => (
                   <div key={file.id} className="floating-file" style={{ left: `${file.x}%`, top: `${file.y}%` }}>
@@ -683,6 +899,46 @@ export default function App() {
             <p className="done-title">{t.exportDone}</p>
             <p className="done-path">{outputPath}</p>
             <p className="done-hint">{exportMode === "zip" ? t.exportDoneZip : t.exportDoneFolder}</p>
+            <button className="btn-primary" onClick={() => void reset()}>{t.optimizeAnother}</button>
+          </div>
+        )}
+
+        {phase === "batchDone" && (
+          <div className="done-state">
+            <div className="done-icon">вњ“</div>
+            <p className="done-title">{quickSummaryTitle}</p>
+            <p className="done-hint">{quickSummaryHint}</p>
+            <div className="result-summary batch-summary">
+              <div className="result-hero">
+                <span className="result-hero-label">{t.saved}</span>
+                <span className="result-hero-value">{formatBytes(batchSavedBytes)}</span>
+              </div>
+              <div className="result-stats">
+                <div className="stat">
+                  <span className="stat-value stat-value--teal">{batchSuccessCount}</span>
+                  <span className="stat-label">успешно</span>
+                </div>
+                <div className="stat-divider" />
+                <div className="stat">
+                  <span className="stat-value stat-value--red">{batchErrorCount}</span>
+                  <span className="stat-label">с ошибками</span>
+                </div>
+              </div>
+            </div>
+            <div className="report report--full batch-report">
+              <div className="report-list">
+                {batchResults.map((item) => (
+                  <div key={item.input} className={`report-item ${item.success ? "" : "report-item--error"}`}>
+                    <span className="report-file">{item.input}</span>
+                    <span className="report-meta">
+                      {item.success
+                        ? `${formatBytes(item.savedBytes ?? 0)} saved`
+                        : (item.error ?? "Error")}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
             <button className="btn-primary" onClick={() => void reset()}>{t.optimizeAnother}</button>
           </div>
         )}

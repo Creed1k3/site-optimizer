@@ -185,6 +185,18 @@ async fn open_zip_dialog(app: AppHandle) -> Option<String> {
 }
 
 #[tauri::command]
+async fn open_zip_dialog_multi(app: AppHandle) -> Vec<String> {
+    use tauri_plugin_dialog::DialogExt;
+    app.dialog()
+        .file()
+        .set_title("Select site ZIP archives")
+        .add_filter("ZIP Archive", &["zip"])
+        .blocking_pick_files()
+        .map(|paths| paths.into_iter().map(|p| p.to_string()).collect())
+        .unwrap_or_default()
+}
+
+#[tauri::command]
 async fn open_folder_dialog(app: AppHandle) -> Option<String> {
     use tauri_plugin_dialog::DialogExt;
     app.dialog()
@@ -192,6 +204,17 @@ async fn open_folder_dialog(app: AppHandle) -> Option<String> {
         .set_title("Select site folder")
         .blocking_pick_folder()
         .map(|p| p.to_string())
+}
+
+#[tauri::command]
+async fn open_folder_dialog_multi(app: AppHandle) -> Vec<String> {
+    use tauri_plugin_dialog::DialogExt;
+    app.dialog()
+        .file()
+        .set_title("Select site folders")
+        .blocking_pick_folders()
+        .map(|paths| paths.into_iter().map(|p| p.to_string()).collect())
+        .unwrap_or_default()
 }
 
 #[tauri::command]
@@ -246,10 +269,22 @@ fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
 }
 
 #[tauri::command]
-async fn optimize_site(app: AppHandle, work_dir: String) -> Result<(), String> {
+async fn optimize_site(
+    app: AppHandle,
+    work_dir: String,
+    remove_unused: bool,
+    dedupe_images: bool,
+) -> Result<(), String> {
     let wd = work_dir.clone();
     tokio::task::spawn_blocking(move || {
-        run_sidecar(app, vec!["optimize".into(), wd])
+        let mut args = vec!["optimize".into(), wd];
+        if remove_unused {
+            args.push("--remove-unused".into());
+        }
+        if dedupe_images {
+            args.push("--dedupe-images".into());
+        }
+        run_sidecar(app, args)
     }).await.map_err(|e| e.to_string())?
 }
 
@@ -291,30 +326,55 @@ async fn cleanup_work_dir(work_dir: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn get_launch_path() -> Option<String> {
-    let arg = std::env::args().nth(1)?;
-    let path = PathBuf::from(&arg);
+fn get_launch_mode() -> String {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(|arg| arg == "--quick").unwrap_or(false) {
+        "quick".to_string()
+    } else {
+        "normal".to_string()
+    }
+}
+
+fn is_valid_launch_target(arg: &str) -> bool {
+    let path = PathBuf::from(arg);
 
     if !path.exists() {
-        return None;
+        return false;
     }
 
-    let metadata = std::fs::metadata(&path).ok()?;
-
-    if !metadata.is_file() && !metadata.is_dir() {
-        return None;
-    }
-
-    // Ignore launcher/installer oddities like passing a bare drive root (`C:` / `C:\`).
-    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
-        return None;
+    let Ok(metadata) = std::fs::metadata(&path) else {
+        return false;
     };
 
-    if name.trim().is_empty() {
-        return None;
+    if !metadata.is_file() && !metadata.is_dir() {
+        return false;
     }
 
-    Some(arg)
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+
+    !name.trim().is_empty()
+}
+
+#[tauri::command]
+fn get_launch_paths() -> Vec<String> {
+    let mut args = std::env::args().skip(1);
+    let mut values: Vec<String> = args.by_ref().collect();
+
+    if values.first().map(|arg| arg == "--quick").unwrap_or(false) {
+        values.remove(0);
+    }
+
+    values
+        .into_iter()
+        .filter(|arg| is_valid_launch_target(arg))
+        .collect()
+}
+
+#[tauri::command]
+fn get_launch_path() -> Option<String> {
+    get_launch_paths().into_iter().next()
 }
 
 fn main() {
@@ -323,13 +383,17 @@ fn main() {
         .plugin(tauri_plugin_shell::init())
         .invoke_handler(tauri::generate_handler![
             open_zip_dialog,
+            open_zip_dialog_multi,
             open_folder_dialog,
+            open_folder_dialog_multi,
             unzip_site,
             prepare_folder,
             optimize_site,
             export_as_zip,
             export_as_folder,
             cleanup_work_dir,
+            get_launch_mode,
+            get_launch_paths,
             get_launch_path,
             get_runtime_debug,
         ])
