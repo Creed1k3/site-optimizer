@@ -104,6 +104,20 @@ function replaceImageRefs(content, convertedKeys) {
     });
 }
 
+async function safeUnlink(filePath, retries = 6) {
+    for (let attempt = 0; attempt <= retries; attempt++) {
+        try {
+            await unlink(filePath);
+            return;
+        } catch (error) {
+            if ((error?.code !== "EBUSY" && error?.code !== "EPERM") || attempt === retries) {
+                throw error;
+            }
+            await new Promise(resolve => setTimeout(resolve, 120 * (attempt + 1)));
+        }
+    }
+}
+
 async function cmdUnzip(zipPath, workDir) {
     emit({ type: "status", message: "Extracting ZIP..." });
     await mkdir(workDir, { recursive: true });
@@ -175,11 +189,12 @@ async function cmdOptimize(workDir) {
         const out = toWebpPath(imgPath);
         try {
             const originalSize = (await stat(imgPath)).size;
-            await sharp(imgPath).webp({ quality: 82, effort: 4 }).toFile(out);
+            const inputBuffer = await readFile(imgPath);
+            await sharp(inputBuffer, { animated: isGif(imgPath) }).webp({ quality: 82, effort: 4 }).toFile(out);
             const newSize = (await stat(out)).size;
             const saved = originalSize - newSize;
             savedBytes += saved;
-            await unlink(imgPath);
+            await safeUnlink(imgPath);
             report.push({
                 type: "converted",
                 file: rel,

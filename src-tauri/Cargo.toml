@@ -1,8 +1,8 @@
 [package]
 name = "site-optimizer"
-version = "0.1.0"
+version = "0.3.0"
 description = "Site image optimizer"
-authors = ["you"]
+authors = ["Creed1k3"]
 edition = "2021"
 
 [[bin]]

@@ -6,11 +6,21 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tauri::{AppHandle, Emitter, Manager};
 
+fn normalize_path_for_node(path: &Path) -> OsString {
+    let path_str = path.to_string_lossy();
+    let normalized = path_str.strip_prefix(r"\\?\").unwrap_or(&path_str);
+    OsString::from(normalized)
+}
+
 fn sidecar_path(app: &AppHandle) -> Result<PathBuf, String> {
     let mut candidates: Vec<PathBuf> = Vec::new();
 
     if let Ok(resource_dir) = app.path().resource_dir() {
+        candidates.push(resource_dir.join("optimizer.js"));
         candidates.push(resource_dir.join("sidecar").join("optimizer.js"));
+        candidates.push(resource_dir.join("_up_").join("sidecar").join("optimizer.js"));
+        candidates.push(resource_dir.join("resources").join("optimizer.js"));
+        candidates.push(resource_dir.join("resources").join("sidecar").join("optimizer.js"));
     }
 
     if let Ok(exe_dir) = std::env::current_exe().and_then(|p| {
@@ -19,7 +29,9 @@ fn sidecar_path(app: &AppHandle) -> Result<PathBuf, String> {
             .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "No executable parent"))
     }) {
         candidates.push(exe_dir.join("sidecar").join("optimizer.js"));
+        candidates.push(exe_dir.join("_up_").join("sidecar").join("optimizer.js"));
         candidates.push(exe_dir.join("..").join("sidecar").join("optimizer.js"));
+        candidates.push(exe_dir.join("..").join("_up_").join("sidecar").join("optimizer.js"));
         candidates.push(exe_dir.join("..").join("..").join("sidecar").join("optimizer.js"));
     }
 
@@ -36,7 +48,16 @@ fn sidecar_path(app: &AppHandle) -> Result<PathBuf, String> {
 
 fn node_command() -> Result<OsString, String> {
     if let Ok(node) = std::env::var("NODE") {
-        return Ok(OsString::from(node));
+        let node_path = PathBuf::from(&node);
+        let is_exe = node_path.is_file()
+            && node_path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .map(|ext| ext.eq_ignore_ascii_case("exe") || ext.eq_ignore_ascii_case("cmd"))
+                .unwrap_or(false);
+        if is_exe {
+            return Ok(OsString::from(node));
+        }
     }
 
     for candidate in ["node", "node.exe"] {
@@ -54,11 +75,60 @@ fn node_command() -> Result<OsString, String> {
     Err("Node.js executable not found in PATH".to_string())
 }
 
+#[tauri::command]
+fn get_runtime_debug(app: AppHandle) -> Vec<String> {
+    let mut debug = Vec::new();
+
+    match std::env::current_exe() {
+        Ok(path) => debug.push(format!("current_exe: {}", path.display())),
+        Err(err) => debug.push(format!("current_exe: <error: {}>", err)),
+    }
+
+    match std::env::current_dir() {
+        Ok(path) => debug.push(format!("current_dir: {}", path.display())),
+        Err(err) => debug.push(format!("current_dir: <error: {}>", err)),
+    }
+
+    match app.path().resource_dir() {
+        Ok(path) => debug.push(format!("resource_dir: {}", path.display())),
+        Err(err) => debug.push(format!("resource_dir: <error: {}>", err)),
+    }
+
+    debug.push(format!(
+        "launch_arg: {}",
+        std::env::args().nth(1).unwrap_or_else(|| "<none>".to_string())
+    ));
+
+    match node_command() {
+        Ok(path) => debug.push(format!("node: {}", PathBuf::from(path).display())),
+        Err(err) => debug.push(format!("node: <error: {}>", err)),
+    }
+
+    match sidecar_path(&app) {
+        Ok(path) => debug.push(format!("sidecar: {}", path.display())),
+        Err(err) => debug.push(format!("sidecar: <error: {}>", err)),
+    }
+
+    debug
+}
+
 fn run_sidecar(app: AppHandle, args: Vec<String>) -> Result<(), String> {
-    let script = sidecar_path(&app)?;
+    let script = sidecar_path(&app)?
+        .canonicalize()
+        .map_err(|e| format!("Failed to resolve optimizer.js: {}", e))?;
+
+    if script
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| !name.eq_ignore_ascii_case("optimizer.js"))
+        .unwrap_or(true)
+    {
+        return Err(format!("Invalid sidecar entrypoint: {}", script.display()));
+    }
+
     let node = node_command()?;
     let mut child = Command::new(node)
-        .arg(&script)
+        .arg(normalize_path_for_node(&script))
         .args(&args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -220,6 +290,33 @@ async fn cleanup_work_dir(work_dir: String) -> Result<(), String> {
     std::fs::remove_dir_all(&work_dir).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+fn get_launch_path() -> Option<String> {
+    let arg = std::env::args().nth(1)?;
+    let path = PathBuf::from(&arg);
+
+    if !path.exists() {
+        return None;
+    }
+
+    let metadata = std::fs::metadata(&path).ok()?;
+
+    if !metadata.is_file() && !metadata.is_dir() {
+        return None;
+    }
+
+    // Ignore launcher/installer oddities like passing a bare drive root (`C:` / `C:\`).
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return None;
+    };
+
+    if name.trim().is_empty() {
+        return None;
+    }
+
+    Some(arg)
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -233,6 +330,8 @@ fn main() {
             export_as_zip,
             export_as_folder,
             cleanup_work_dir,
+            get_launch_path,
+            get_runtime_debug,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
