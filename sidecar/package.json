@@ -1,0 +1,11 @@
+{
+  "name": "site-optimizer-sidecar",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Core optimizer engine (Node.js sidecar for Tauri)",
+  "main": "optimizer.js",
+  "dependencies": {
+    "adm-zip": "^0.5.12",
+    "sharp": "^0.33.4"
+  }
+}
