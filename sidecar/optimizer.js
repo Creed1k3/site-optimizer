@@ -167,7 +167,7 @@ async function cmdOptimize(workDir) {
 
     const toConvert = convertibleFiles;
     const toDelete = [];
-    const convertedKeys = new Set(toConvert.flatMap(imageKeyVariants));
+    const convertedKeys = new Set();
 
     emit({ type: "classify_done", toConvert: toConvert.length, toDelete: toDelete.length });
 
@@ -192,9 +192,25 @@ async function cmdOptimize(workDir) {
             const inputBuffer = await readFile(imgPath);
             await sharp(inputBuffer, { animated: isGif(imgPath) }).webp({ quality: 82, effort: 4 }).toFile(out);
             const newSize = (await stat(out)).size;
+
+            if (isGif(imgPath) && newSize >= originalSize) {
+                await safeUnlink(out);
+                report.push({
+                    type: "error",
+                    file: rel,
+                    message: `Skipped GIF -> WebP because output is larger (${originalSize} -> ${newSize} bytes)`
+                });
+                done++;
+                emit({ type: "progress", done, total, percent: total ? Math.round((done / total) * 100) : 100, file: rel });
+                continue;
+            }
+
             const saved = originalSize - newSize;
             savedBytes += saved;
             await safeUnlink(imgPath);
+            for (const key of imageKeyVariants(imgPath)) {
+                convertedKeys.add(key);
+            }
             report.push({
                 type: "converted",
                 file: rel,
