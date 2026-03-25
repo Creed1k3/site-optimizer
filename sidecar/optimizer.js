@@ -2,7 +2,7 @@
 // sidecar/optimizer.js - ZIP or folder in -> optimize -> ZIP or folder out
 
 import { readdir, stat, readFile, writeFile, unlink, mkdir, cp } from "fs/promises";
-import { join, extname, relative, basename, dirname } from "path";
+import { join, extname, relative, basename, dirname, resolve, isAbsolute } from "path";
 import { createRequire } from "module";
 import { createHash } from "crypto";
 
@@ -54,6 +54,10 @@ const isPng = filePath => extname(filePath).toLowerCase() === ".png";
 const isJpg = filePath => [".jpg", ".jpeg"].includes(extname(filePath).toLowerCase());
 const isGif = filePath => extname(filePath).toLowerCase() === ".gif";
 const toWebpPath = filePath => filePath.replace(/\.(png|jpe?g|gif)$/i, ".webp");
+const webpCollisionPath = filePath => {
+    const ext = extname(filePath).toLowerCase().replace(".", "");
+    return filePath.replace(/\.(png|jpe?g|gif)$/i, `-${ext}.webp`);
+};
 
 function normalizeRef(ref) {
     return ref
@@ -107,19 +111,47 @@ function stripResponsiveAttrs(content) {
         .replace(/\s+sizes\s*=\s*(".*?"|'.*?'|[^\s>]+)/gi, "");
 }
 
-function replaceImageRefs(content, exactRewrites, basenameRewrites, onSkip) {
+function replaceImageRefs(content, codeFile, workDir, exactRewrites, onSkip) {
+    const codeDir = dirname(codeFile);
+
     const resolveReplacement = rawPath => {
         if (isDynamicRef(rawPath)) {
             onSkip?.(rawPath, "Пропущена динамическая ссылка");
             return null;
         }
+
+        if (/^(?:https?:)?\/\//i.test(rawPath) || rawPath.startsWith("data:")) {
+            return null;
+        }
+
         const [pathOnly, suffix = ""] = rawPath.split(/([?#].*)/, 2);
-        const normalized = normalizeRef(pathOnly);
-        const replacement = exactRewrites.get(normalized) ?? basenameRewrites.get(basename(normalized));
+        const normalizedOriginal = normalizeRef(pathOnly);
+
+        let normalizedResolved;
+        if (pathOnly.startsWith("/")) {
+            normalizedResolved = normalizeRef(pathOnly.slice(1));
+        } else if (isAbsolute(pathOnly)) {
+            normalizedResolved = normalizeRef(relative(workDir, pathOnly));
+        } else {
+            normalizedResolved = normalizeRef(relative(workDir, resolve(codeDir, pathOnly)));
+        }
+
+        const replacement = exactRewrites.get(normalizedResolved)
+            ?? exactRewrites.get(normalizedOriginal);
         if (!replacement) {
             return null;
         }
-        return `${replacement}${suffix}`;
+
+        if (pathOnly.startsWith("/")) {
+            return `/${replacement}${suffix}`;
+        }
+
+        const replacementAbs = resolve(workDir, replacement);
+        let nextPath = relative(codeDir, replacementAbs).replace(/\\/g, "/");
+        if (!nextPath || nextPath === "") {
+            nextPath = basename(replacement);
+        }
+        return `${nextPath}${suffix}`;
     };
 
     let updated = content.replace(
@@ -183,24 +215,6 @@ function replaceImageRefs(content, exactRewrites, basenameRewrites, onSkip) {
     return updated;
 }
 
-function buildBasenameRewriteMap(exactRewrites) {
-    const counts = new Map();
-    for (const key of exactRewrites.keys()) {
-        const name = basename(key);
-        counts.set(name, (counts.get(name) ?? 0) + 1);
-    }
-
-    const basenameRewrites = new Map();
-    for (const [key, value] of exactRewrites.entries()) {
-        const name = basename(key);
-        if (counts.get(name) === 1) {
-            basenameRewrites.set(name, value);
-        }
-    }
-
-    return basenameRewrites;
-}
-
 function hashBuffer(buffer) {
     return createHash("sha1").update(buffer).digest("hex");
 }
@@ -259,6 +273,12 @@ async function cmdOptimize(workDir) {
     const toConvert = convertibleFiles;
     const toDelete = [];
     const exactRewrites = new Map();
+    const targetUsage = new Map();
+
+    for (const imgPath of toConvert) {
+        const desired = normalizeRef(relative(workDir, toWebpPath(imgPath)).replace(/\\/g, "/"));
+        targetUsage.set(desired, (targetUsage.get(desired) ?? 0) + 1);
+    }
 
     emit({ type: "classify_done", toConvert: toConvert.length, toDelete: toDelete.length });
 
@@ -277,7 +297,9 @@ async function cmdOptimize(workDir) {
 
     for (const imgPath of toConvert) {
         const rel = relative(workDir, imgPath);
-        const out = toWebpPath(imgPath);
+        const desiredOut = toWebpPath(imgPath);
+        const desiredKey = normalizeRef(relative(workDir, desiredOut).replace(/\\/g, "/"));
+        const out = (targetUsage.get(desiredKey) ?? 0) > 1 ? webpCollisionPath(imgPath) : desiredOut;
         try {
             const originalSize = (await stat(imgPath)).size;
             const inputBuffer = await readFile(imgPath);
@@ -347,14 +369,13 @@ async function cmdOptimize(workDir) {
     }
 
     emit({ type: "status", message: "Updating code references..." });
-    const basenameRewrites = buildBasenameRewriteMap(exactRewrites);
     let replacedFiles = 0;
     const finalReferencedImages = new Set();
     for (const codeFile of codeFiles) {
         const content = await readFile(codeFile, "utf8").catch(() => null);
         if (!content) continue;
         const skippedRefs = new Map();
-        let updated = replaceImageRefs(content, exactRewrites, basenameRewrites, (rawPath, reason) => {
+        let updated = replaceImageRefs(content, codeFile, workDir, exactRewrites, (rawPath, reason) => {
             if (!rawPath) return;
             skippedRefs.set(`${reason}: ${rawPath}`, { rawPath, reason });
         });
