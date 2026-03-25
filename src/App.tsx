@@ -50,6 +50,23 @@ interface BatchSummaryItem {
   error?: string;
 }
 
+interface LaunchPayload {
+  mode: "normal" | "quick";
+  paths: string[];
+}
+
+interface ContextMenuSettings {
+  normal: boolean;
+  quick: boolean;
+}
+
+interface UpdateInfo {
+  current_version: string;
+  version: string;
+  notes?: string | null;
+  pub_date?: string | null;
+}
+
 const translations = {
   ru: {
     languageLabel: "Язык",
@@ -222,10 +239,91 @@ export default function App() {
   });
   const [runtimeDebug, setRuntimeDebug] = useState<string[]>([]);
   const [batchResults, setBatchResults] = useState<BatchSummaryItem[]>([]);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [contextMenuNormal, setContextMenuNormal] = useState(false);
+  const [contextMenuQuick, setContextMenuQuick] = useState(false);
+  const [isSavingSettings, setIsSavingSettings] = useState(false);
+  const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
+  const [isInstallingUpdate, setIsInstallingUpdate] = useState(false);
   const unlisten = useRef<(() => void) | null>(null);
   const floatCounter = useRef(0);
   const languageSwitcherRef = useRef<HTMLDivElement | null>(null);
   const t = translations[locale];
+
+  const setTrayStatus = useCallback(async (message: string) => {
+    try {
+      await invoke("set_tray_status", { message });
+    } catch {
+      // tray may be unavailable in dev edge cases
+    }
+  }, []);
+
+  const hideToTray = useCallback(async () => {
+    try {
+      await invoke("hide_main_window");
+    } catch {
+      // ignore hide failures
+    }
+  }, []);
+
+  const showMainWindow = useCallback(async () => {
+    try {
+      await invoke("show_main_window");
+    } catch {
+      // ignore show failures
+    }
+  }, []);
+
+  const quitApp = useCallback(async () => {
+    try {
+      await invoke("quit_app");
+    } catch {
+      // ignore quit failures
+    }
+  }, []);
+
+  const refreshContextMenuSettings = useCallback(async () => {
+    try {
+      const settings = await invoke<ContextMenuSettings>("get_context_menu_settings");
+      setContextMenuNormal(settings.normal);
+      setContextMenuQuick(settings.quick);
+    } catch {
+      // ignore settings lookup failures
+    }
+  }, []);
+
+  const checkForUpdates = useCallback(async () => {
+    try {
+      const update = await invoke<UpdateInfo | null>("check_for_updates");
+      setUpdateInfo(update);
+    } catch {
+      // updater may be unconfigured during development
+    }
+  }, []);
+
+  const saveContextMenuSettings = useCallback(async () => {
+    setIsSavingSettings(true);
+    try {
+      const settings = await invoke<ContextMenuSettings>("set_context_menu_settings", {
+        normal: contextMenuNormal,
+        quick: contextMenuQuick
+      });
+      setContextMenuNormal(settings.normal);
+      setContextMenuQuick(settings.quick);
+      setIsSettingsOpen(false);
+    } finally {
+      setIsSavingSettings(false);
+    }
+  }, [contextMenuNormal, contextMenuQuick]);
+
+  const installUpdate = useCallback(async () => {
+    setIsInstallingUpdate(true);
+    try {
+      await invoke("install_pending_update");
+    } finally {
+      setIsInstallingUpdate(false);
+    }
+  }, []);
 
   useEffect(() => {
     window.localStorage.setItem("site-optimizer-locale", locale);
@@ -240,7 +338,16 @@ export default function App() {
   }, [dedupeImages]);
 
   useEffect(() => {
+    void setTrayStatus("");
+  }, [setTrayStatus]);
+
+  useEffect(() => {
+    void refreshContextMenuSettings();
+  }, [refreshContextMenuSettings]);
+
+  useEffect(() => {
     let cancelled = false;
+    let unlistenLaunchRequested: (() => void) | null = null;
 
     (async () => {
       try {
@@ -253,6 +360,9 @@ export default function App() {
       try {
         const launchMode = await invoke<"normal" | "quick">("get_launch_mode");
         launchModeRef.current = launchMode;
+        if (launchMode !== "quick") {
+          void checkForUpdates();
+        }
       } catch {
         // ignore launch mode lookup failures
       }
@@ -268,7 +378,7 @@ export default function App() {
 
         if (launchModeRef.current === "quick") {
           window.setTimeout(() => {
-            void runQuickBatchFromPaths(launchPaths, isZip ? "zip" : "folder");
+            void runQuickBatchFromPaths(launchPaths, isZip ? "zip" : "folder", true);
           }, 160);
         }
         return;
@@ -285,12 +395,38 @@ export default function App() {
       } catch {
         // ignore startup arg lookup failures
       }
+
+      unlistenLaunchRequested = await listen<LaunchPayload>("launch_requested", (event) => {
+        const payload = event.payload;
+        if (!payload?.paths?.length) return;
+
+        const firstPath = payload.paths[0];
+        const isZip = firstPath.toLowerCase().endsWith(".zip");
+        setInputMode(isZip ? "zip" : "folder");
+        setInputPath(firstPath);
+
+        if (payload.mode === "quick") {
+          void runQuickBatchFromPaths(payload.paths, isZip ? "zip" : "folder", true);
+          return;
+        }
+
+        void showMainWindow();
+        setPhase("idle");
+        setBatchResults([]);
+        setResult(null);
+        setOutputPath(null);
+        setErrorMsg("");
+        setFloatingFiles([]);
+        setCurrentFile("");
+        setProgress({ done: 0, total: 0, percent: 0, status: "" });
+      });
     })();
 
     return () => {
       cancelled = true;
+      unlistenLaunchRequested?.();
     };
-  }, []);
+  }, [checkForUpdates, showMainWindow]);
 
   useEffect(() => {
     const handlePointerDown = (event: MouseEvent) => {
@@ -322,6 +458,16 @@ export default function App() {
   const quickSummaryHint = locale === "ru"
     ? "Все выбранные сайты обработаны автоматически и сохранены рядом с исходниками."
     : "All selected sites were processed automatically and saved next to the originals.";
+  const settingsTitle = locale === "ru" ? "Настройки" : "Settings";
+  const settingsSave = locale === "ru" ? "Сохранить" : "Save";
+  const settingsClose = locale === "ru" ? "Закрыть" : "Close";
+  const contextMenuTitle = locale === "ru" ? "Пункты контекстного меню" : "Context menu entries";
+  const updateTitle = locale === "ru" ? "Доступна новая версия" : "New version available";
+  const updateHint = locale === "ru" ? "Хотите скачать и установить обновление сейчас?" : "Do you want to download and install the update now?";
+  const updateNowLabel = locale === "ru" ? "Обновить сейчас" : "Update now";
+  const updateLaterLabel = locale === "ru" ? "Позже" : "Later";
+  const contextNormalLabel = locale === "ru" ? "Оптимизировать сайт" : "Optimize site";
+  const contextQuickLabel = locale === "ru" ? "Быстро оптимизировать сайт" : "Quick optimize site";
 
   useEffect(() => {
     let unlistenDrop: (() => void) | null = null;
@@ -551,10 +697,10 @@ export default function App() {
   const runQuickBatch = async () => {
     const paths = await pickBatchInputs();
     if (!paths.length) return;
-    await runQuickBatchFromPaths(paths, inputMode);
+    await runQuickBatchFromPaths(paths, inputMode, false);
   };
 
-  const runQuickBatchFromPaths = async (paths: string[], mode: InputMode) => {
+  const runQuickBatchFromPaths = async (paths: string[], mode: InputMode, autoQuit: boolean) => {
     setPhase("batching");
     setBatchResults([]);
     setResult(null);
@@ -562,19 +708,27 @@ export default function App() {
     setErrorMsg("");
     setFloatingFiles([]);
     setCurrentFile("");
+    await setTrayStatus(locale === "ru" ? "Быстрая оптимизация запущена" : "Quick batch started");
+    await hideToTray();
 
     const nextResults: BatchSummaryItem[] = [];
 
     for (let index = 0; index < paths.length; index++) {
       const currentPath = paths[index];
+      const shortName = currentPath.split(/[\\/]/).pop() ?? currentPath;
       setInputPath(currentPath);
       setInputMode(mode);
       setProgress({
         done: index,
         total: paths.length,
         percent: Math.round((index / paths.length) * 100),
-        status: `${index + 1}/${paths.length}: ${currentPath.split(/[\\/]/).pop() ?? currentPath}`
+        status: `${index + 1}/${paths.length}: ${shortName}`
       });
+      await setTrayStatus(
+        locale === "ru"
+          ? `Быстрая оптимизация: ${index + 1}/${paths.length} — ${shortName}`
+          : `Quick batch: ${index + 1}/${paths.length} - ${shortName}`
+      );
 
       try {
         const { out, donePayload } = await optimizeSingleForBatch(currentPath, mode);
@@ -601,6 +755,17 @@ export default function App() {
       status: quickSummaryTitle
     });
     setPhase("batchDone");
+    const successCount = nextResults.filter((item) => item.success).length;
+    const errorCount = nextResults.length - successCount;
+    await setTrayStatus(
+      locale === "ru"
+        ? `Готово: успешно ${successCount}, ошибок ${errorCount}`
+        : `Done: ${successCount} success, ${errorCount} errors`
+    );
+
+    if (autoQuit) {
+      await quitApp();
+    }
   };
 
   const reset = async () => {
@@ -621,6 +786,8 @@ export default function App() {
     setFloatingFiles([]);
     setCurrentFile("");
     setProgress({ done: 0, total: 0, percent: 0, status: "" });
+    await setTrayStatus("");
+    await showMainWindow();
   };
 
   const stepIndex = { idle: 0, preparing: 0, running: 1, reviewing: 2, exporting: 3, done: 3, error: 0, batching: 1, batchDone: 3 };
@@ -673,7 +840,12 @@ export default function App() {
           ))}
         </div>
 
-        <span className="header-version">v0.3.0</span>
+        <div className="header-tools">
+          <button className="settings-btn" type="button" onClick={() => setIsSettingsOpen(true)} aria-label={settingsTitle}>
+            <span className="settings-btn-icon">⚙</span>
+          </button>
+          <span className="header-version">v0.4.2</span>
+        </div>
       </header>
 
       <main className="main">
@@ -956,6 +1128,79 @@ export default function App() {
               </div>
             )}
             <button className="btn-ghost" onClick={() => void reset()}>{t.tryAgain}</button>
+          </div>
+        )}
+        {isSettingsOpen && (
+          <div className="modal-backdrop" onClick={() => setIsSettingsOpen(false)}>
+            <div className="modal-card" onClick={(event) => event.stopPropagation()}>
+              <div className="modal-head">
+                <h3>{settingsTitle}</h3>
+                <button type="button" className="modal-close" onClick={() => setIsSettingsOpen(false)}>×</button>
+              </div>
+
+              <div className="modal-section">
+                <div className="modal-section-title">{contextMenuTitle}</div>
+
+                <label className="option-row">
+                  <input
+                    type="checkbox"
+                    checked={contextMenuNormal}
+                    onChange={(event) => setContextMenuNormal(event.target.checked)}
+                  />
+                  <span className="option-copy">
+                    <span className="option-label">{contextNormalLabel}</span>
+                  </span>
+                </label>
+
+                <label className="option-row">
+                  <input
+                    type="checkbox"
+                    checked={contextMenuQuick}
+                    onChange={(event) => setContextMenuQuick(event.target.checked)}
+                  />
+                  <span className="option-copy">
+                    <span className="option-label">{contextQuickLabel}</span>
+                  </span>
+                </label>
+              </div>
+
+              <div className="modal-actions">
+                <button className="btn-primary" disabled={isSavingSettings} onClick={() => void saveContextMenuSettings()}>
+                  {settingsSave}
+                </button>
+                <button className="btn-ghost" onClick={() => setIsSettingsOpen(false)}>
+                  {settingsClose}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {updateInfo && (
+          <div className="modal-backdrop" onClick={() => setUpdateInfo(null)}>
+            <div className="modal-card" onClick={(event) => event.stopPropagation()}>
+              <div className="modal-head">
+                <h3>{updateTitle}</h3>
+                <button type="button" className="modal-close" onClick={() => setUpdateInfo(null)}>×</button>
+              </div>
+
+              <div className="modal-section">
+                <div className="update-version-line">
+                  {updateInfo.current_version} → {updateInfo.version}
+                </div>
+                <p className="update-hint">{updateHint}</p>
+                {updateInfo.notes && <div className="update-notes">{updateInfo.notes}</div>}
+              </div>
+
+              <div className="modal-actions">
+                <button className="btn-primary" disabled={isInstallingUpdate} onClick={() => void installUpdate()}>
+                  {isInstallingUpdate ? "..." : updateNowLabel}
+                </button>
+                <button className="btn-ghost" onClick={() => setUpdateInfo(null)}>
+                  {updateLaterLabel}
+                </button>
+              </div>
+            </div>
           </div>
         )}
       </main>

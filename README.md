@@ -1,113 +1,157 @@
-# Site Optimizer v0.3.0
+# Site Optimizer v0.4.2
 
-Desktop app (Tauri 2 + React). Принимает **ZIP-архив или папку**, оптимизирует изображения, даёт проверить результат, затем экспортирует — снова в **ZIP или папку** на твой выбор.
+Desktop app on Tauri 2 + React for optimizing website image assets from a ZIP archive or a folder.
 
----
+The app can:
+- open a site from a `.zip` archive or a folder
+- convert supported images to `webp` when it is actually beneficial
+- rewrite image references in code
+- review the result before export
+- export as a new ZIP or folder
+- run quick batch optimization in the tray
 
-## Что делает
+## Features
 
-1. **Распаковывает ZIP** или **копирует папку** во временный рабочий каталог
-2. Конвертирует **PNG + JPG/JPEG → WebP** (quality 82, ~70-80% меньше)
-3. Заменяет все `.png` / `.jpg` / `.jpeg` ссылки в коде на `.webp`
-4. Перемещает неиспользуемые картинки в `.trash/` (не удаляет сразу)
-5. **Ждёт** — показывает путь к рабочей папке, можно проверить файлы
-6. Экспортирует результат как **ZIP-архив** или **папку** — на выбор
-7. Удаляет временный рабочий каталог
+- Input modes: `ZIP archive` or `Folder`
+- Export modes: `ZIP archive` or `Folder`
+- Quick batch optimization for multiple sites
+- Tray mode for quick optimization
+- Context menu integration on Windows:
+  - `Оптимизировать сайт`
+  - `Быстро оптимизировать сайт`
+- Optional safe cleanup:
+  - remove unused images
+  - deduplicate identical images by content
+- RU / EN interface
+- Update prompt support through GitHub Releases + Tauri Updater
 
----
+## Image handling
 
-## Требования
+Supported input formats:
+- `png`
+- `jpg`
+- `jpeg`
+- `gif`
 
-| Инструмент | Версия | Установка |
-|---|---|---|
-| Rust (stable) | 1.77+ | https://rustup.rs |
-| Node.js | 18+ | https://nodejs.org |
-| Tauri prerequisites | — | https://tauri.app/start/prerequisites/ |
+Optimization rules:
+- images are converted to `webp`
+- animated `gif` is kept as original if converted `webp` is larger
+- suspicious or dynamic references are skipped instead of blindly rewritten
+- collisions like `image.png` and `image.jpg` are handled safely so they do not overwrite each other
 
-**macOS:** `xcode-select --install`
-**Linux:** `webkit2gtk libssl-dev libayatana-appindicator3-dev`
-**Windows:** Visual Studio Build Tools (C++ workload)
+## How It Works
 
----
+### Standard mode
 
-## Сборка и запуск
+1. Select a ZIP archive or a folder.
+2. The app prepares a working copy.
+3. Images are scanned, optimized and references are updated.
+4. You review the result.
+5. Export to ZIP or folder.
 
-```bash
-# 1. Распакуй проект
-cd site-optimizer
+### Quick mode
 
-# 2. Зависимости фронтенда
-npm install
+1. Select multiple sites or use the Windows context menu quick action.
+2. The app moves to the tray.
+3. Sites are processed one by one automatically.
+4. Results are saved next to the originals.
+5. If quick mode was launched from the context menu, the app exits after finishing.
 
-# 3. Зависимости движка
-cd sidecar && npm install && cd ..
+## Windows Tray Behavior
 
-# 4. Dev-режим
-npm run tauri dev
+- Closing the main window sends the app to the tray.
+- Clicking the tray icon toggles window visibility.
+- Tray menu:
+  - show app
+  - hide to tray
+  - quit
 
-# 5. Production сборка
-npm run tauri build
-# Инсталлятор → src-tauri/target/release/bundle/
-```
+## Context Menu
 
----
+The installer can add Windows context menu entries for:
+- ZIP archives
+- folders
 
-## Структура проекта
+You can also enable or disable them later from the app settings via the gear button near the build version.
 
-```
+## Auto Updates
+
+The app is prepared for auto updates through GitHub Releases using the Tauri updater plugin.
+
+Important:
+- update signing is required
+- the private signing key must stay secret
+- the public key is stored in app config
+
+## Project Structure
+
+```text
 site-optimizer/
 ├── src/
-│   ├── App.tsx          # UI: переключатель вход/выход, прогресс, ревью, экспорт
-│   └── App.css          # Industrial dark тема
-├── src-tauri/
-│   ├── src/main.rs      # Команды Rust: unzip/prepare/optimize/export/cleanup
-│   ├── Cargo.toml
-│   └── tauri.conf.json
+│   ├── App.tsx
+│   └── App.css
 ├── sidecar/
-│   ├── optimizer.js     # Движок: unzip | optimize | rezip | copyout
-│   └── package.json     # sharp + adm-zip
-├── index.html
-├── vite.config.ts
-└── package.json
+│   ├── optimizer.js
+│   ├── package.json
+│   └── node_modules/
+├── src-tauri/
+│   ├── src/main.rs
+│   ├── Cargo.toml
+│   ├── tauri.conf.json
+│   ├── windows-installer-hooks.nsh
+│   └── capabilities/default.json
+├── package.json
+└── README.md
 ```
 
----
+## Development
 
-## Флоу
+Install frontend dependencies:
 
-```
-Пользователь перетаскивает ZIP или папку
-           │
-    ┌──────┴──────┐
-    │ ZIP         │ Folder
-    ▼             ▼
-unzip_site    prepare_folder
-(extract)     (copy to work dir — оригинал не трогается)
-           │
-           ▼
-     optimize_site
-     scan → classify → convert → update refs → trash unused
-           │
-           ▼
-     [REVIEW] — пользователь смотрит отчёт и файлы
-           │
-    ┌──────┴──────┐
-    │ ZIP         │ Folder
-    ▼             ▼
-export_as_zip  export_as_folder
-<name>_optimized.zip   <name>_optimized/
-           │
-           ▼
-     cleanup_work_dir
-           │
-           ▼
-         Done
+```powershell
+npm install
 ```
 
----
+Run in development:
 
-## Заметки
+```powershell
+npm.cmd run tauri dev
+```
 
-- Оригинальный файл/папка **никогда не изменяется** — работа идёт в копии
-- `.trash/` с удалёнными картинками не попадает в экспорт
-- Имя выходного файла: `<оригинал>_optimized.zip` или `<оригинал>_optimized/`
+Build release:
+
+```powershell
+npm.cmd run tauri build
+```
+
+## Signed Build For Updates
+
+Before building updater-enabled releases:
+
+```powershell
+$env:TAURI_SIGNING_PRIVATE_KEY_PATH = ".\src-tauri\signing\site-optimizer.key"
+$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = "your-password"
+npm.cmd run tauri build
+```
+
+## Security Note
+
+Do not commit:
+- `src-tauri/signing/site-optimizer.key`
+- any private signing key
+- any private password
+
+The `src-tauri/signing/` folder is already ignored in git.
+
+## Output
+
+The app creates:
+- `<name>_optimized.zip`
+- `<name>_optimized/`
+
+Temporary working directories use:
+- `<name>_optimizer_work/`
+
+## Current Version
+
+`v0.4.2`

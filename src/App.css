@@ -1101,3 +1101,118 @@ body {
     line-height: 1.55;
     word-break: break-all;
 }
+
+.header-tools {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.settings-btn {
+    width: 34px;
+    height: 34px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 11px;
+    border: 1px solid rgba(141, 227, 203, 0.16);
+    background: rgba(20, 28, 29, 0.92);
+    color: var(--text);
+    transition: border-color 0.18s ease, transform 0.18s ease, background 0.18s ease;
+}
+
+.settings-btn:hover {
+    border-color: rgba(141, 227, 203, 0.34);
+    background: rgba(25, 34, 35, 0.96);
+    transform: translateY(-1px);
+}
+
+.settings-btn-icon {
+    font-size: 15px;
+    line-height: 1;
+}
+
+.modal-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 80;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 28px;
+    background: rgba(7, 10, 11, 0.58);
+    backdrop-filter: blur(8px);
+}
+
+.modal-card {
+    width: min(520px, 100%);
+    padding: 22px;
+    border-radius: 20px;
+    border: 1px solid rgba(141, 227, 203, 0.14);
+    background: linear-gradient(180deg, rgba(20, 27, 28, 0.98), rgba(14, 18, 19, 0.98));
+    box-shadow: 0 26px 80px rgba(0, 0, 0, 0.45);
+}
+
+.modal-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 18px;
+}
+
+.modal-head h3 {
+    margin: 0;
+    color: var(--text);
+    font-size: 20px;
+    font-weight: 600;
+}
+
+.modal-close {
+    width: 34px;
+    height: 34px;
+    border: 0;
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.04);
+    color: var(--text2);
+    font-size: 22px;
+    line-height: 1;
+}
+
+.modal-section {
+    display: grid;
+    gap: 12px;
+}
+
+.modal-section-title {
+    color: var(--accent);
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+}
+
+.modal-actions {
+    display: flex;
+    gap: 12px;
+    margin-top: 22px;
+}
+
+.update-version-line {
+    color: var(--text);
+    font-size: 16px;
+    font-weight: 600;
+}
+
+.update-hint {
+    margin: 0;
+    color: var(--text2);
+}
+
+.update-notes {
+    padding: 12px 14px;
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.03);
+    color: var(--text2);
+    white-space: pre-wrap;
+    line-height: 1.5;
+}

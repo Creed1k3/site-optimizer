@@ -2,9 +2,49 @@
 
 use std::ffi::OsString;
 use std::io::{BufRead, BufReader};
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use tauri::{AppHandle, Emitter, Manager};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
+use tauri::{
+    menu::{MenuBuilder, MenuItemBuilder},
+    tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent},
+    AppHandle, Emitter, Manager, RunEvent, WindowEvent,
+};
+use tauri_plugin_updater::{Update, UpdaterExt};
+use winreg::{enums::HKEY_CURRENT_USER, RegKey};
+
+#[derive(Default)]
+struct AppState {
+    allow_exit: AtomicBool,
+}
+
+#[derive(Default)]
+struct UpdateState {
+    pending: Mutex<Option<Update>>,
+}
+
+#[derive(Clone, serde::Serialize)]
+struct LaunchPayload {
+    mode: String,
+    paths: Vec<String>,
+}
+
+#[derive(Clone, serde::Serialize)]
+struct UpdatePayload {
+    current_version: String,
+    version: String,
+    notes: Option<String>,
+    pub_date: Option<String>,
+}
+
+#[derive(Clone, serde::Serialize)]
+struct ContextMenuSettings {
+    normal: bool,
+    quick: bool,
+}
 
 fn normalize_path_for_node(path: &Path) -> OsString {
     let path_str = path.to_string_lossy();
@@ -75,6 +115,183 @@ fn node_command() -> Result<OsString, String> {
     Err("Node.js executable not found in PATH".to_string())
 }
 
+fn is_quick_launch() -> bool {
+    std::env::args().any(|arg| arg == "--quick")
+}
+
+fn show_main_window_impl(app: &AppHandle) -> Result<(), String> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "Main window not found".to_string())?;
+
+    window.show().map_err(|e| e.to_string())?;
+    window.unminimize().map_err(|e| e.to_string())?;
+    window.set_focus().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn hide_main_window_impl(app: &AppHandle) -> Result<(), String> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "Main window not found".to_string())?;
+
+    window.hide().map_err(|e| e.to_string())
+}
+
+fn set_tray_status_impl(app: &AppHandle, message: &str) -> Result<(), String> {
+    let tray = app
+        .tray_by_id("main-tray")
+        .ok_or_else(|| "Tray icon not found".to_string())?;
+
+    let tooltip = if message.trim().is_empty() {
+        "Site Optimizer".to_string()
+    } else {
+        format!("Site Optimizer\n{}", message)
+    };
+
+    tray.set_tooltip(Some(tooltip)).map_err(|e| e.to_string())
+}
+
+fn registry_shell_root(root: &str) -> Result<RegKey, String> {
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    hkcu.create_subkey(root)
+        .map(|(key, _)| key)
+        .map_err(|e| e.to_string())
+}
+
+fn current_exe_command() -> Result<String, String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    Ok(format!("\"{}\"", exe.display()))
+}
+
+fn register_context_menu_entry(root: &str, subkey: &str, title: &str, command: &str) -> Result<(), String> {
+    let shell_root = registry_shell_root(root)?;
+    let (verb_key, _) = shell_root.create_subkey(subkey).map_err(|e| e.to_string())?;
+    verb_key.set_value("", &title).map_err(|e| e.to_string())?;
+    verb_key
+        .set_value("Icon", &std::env::current_exe().map_err(|e| e.to_string())?.display().to_string())
+        .map_err(|e| e.to_string())?;
+    verb_key
+        .set_value("MultiSelectModel", &"Player")
+        .map_err(|e| e.to_string())?;
+    let (command_key, _) = verb_key.create_subkey("command").map_err(|e| e.to_string())?;
+    command_key.set_value("", &command).map_err(|e| e.to_string())
+}
+
+fn unregister_context_menu_entry(root: &str, subkey: &str) {
+    if let Ok(shell_root) = registry_shell_root(root) {
+        let _ = shell_root.delete_subkey_all(subkey);
+    }
+}
+
+fn apply_context_menu_settings(normal: bool, quick: bool) -> Result<(), String> {
+    let exe = current_exe_command()?;
+    let roots = [
+        "Software\\Classes\\SystemFileAssociations\\.zip\\shell",
+        "Software\\Classes\\Directory\\shell",
+    ];
+
+    for root in roots {
+        if normal {
+            register_context_menu_entry(
+                root,
+                "SiteOptimizer",
+                "Оптимизировать сайт",
+                &format!("{exe} \"%1\""),
+            )?;
+        } else {
+            unregister_context_menu_entry(root, "SiteOptimizer");
+        }
+
+        if quick {
+            register_context_menu_entry(
+                root,
+                "SiteOptimizerQuick",
+                "Быстро оптимизировать сайт",
+                &format!("{exe} --quick \"%1\""),
+            )?;
+        } else {
+            unregister_context_menu_entry(root, "SiteOptimizerQuick");
+        }
+    }
+
+    Ok(())
+}
+
+fn read_context_menu_settings() -> ContextMenuSettings {
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let has_normal = hkcu
+        .open_subkey("Software\\Classes\\SystemFileAssociations\\.zip\\shell\\SiteOptimizer")
+        .is_ok()
+        || hkcu
+            .open_subkey("Software\\Classes\\Directory\\shell\\SiteOptimizer")
+            .is_ok();
+    let has_quick = hkcu
+        .open_subkey("Software\\Classes\\SystemFileAssociations\\.zip\\shell\\SiteOptimizerQuick")
+        .is_ok()
+        || hkcu
+            .open_subkey("Software\\Classes\\Directory\\shell\\SiteOptimizerQuick")
+            .is_ok();
+
+    ContextMenuSettings {
+        normal: has_normal,
+        quick: has_quick,
+    }
+}
+
+fn setup_tray(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+    let show_item = MenuItemBuilder::with_id("show", "Показать Site Optimizer").build(app)?;
+    let hide_item = MenuItemBuilder::with_id("hide", "Свернуть в трей").build(app)?;
+    let quit_item = MenuItemBuilder::with_id("quit", "Выход").build(app)?;
+    let menu = MenuBuilder::new(app)
+        .items(&[&show_item, &hide_item, &quit_item])
+        .build()?;
+
+    let mut tray_builder = TrayIconBuilder::with_id("main-tray")
+        .menu(&menu)
+        .tooltip("Site Optimizer")
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app: &AppHandle, event| match event.id().as_ref() {
+            "show" => {
+                let _ = show_main_window_impl(app);
+            }
+            "hide" => {
+                let _ = hide_main_window_impl(app);
+            }
+            "quit" => {
+                if let Some(state) = app.try_state::<AppState>() {
+                    state.allow_exit.store(true, Ordering::SeqCst);
+                }
+                app.exit(0);
+            }
+            _ => {}
+        })
+        .on_tray_icon_event(|tray: &TrayIcon, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                let app = tray.app_handle();
+                if let Some(window) = app.get_webview_window("main") {
+                    if window.is_visible().unwrap_or(true) {
+                        let _ = window.hide();
+                    } else {
+                        let _ = show_main_window_impl(&app);
+                    }
+                }
+            }
+        });
+
+    if let Some(icon) = app.default_window_icon().cloned() {
+        tray_builder = tray_builder.icon(icon);
+    }
+
+    tray_builder.build(app)?;
+    Ok(())
+}
+
 #[tauri::command]
 fn get_runtime_debug(app: AppHandle) -> Vec<String> {
     let mut debug = Vec::new();
@@ -112,6 +329,91 @@ fn get_runtime_debug(app: AppHandle) -> Vec<String> {
     debug
 }
 
+#[tauri::command]
+fn show_main_window(app: AppHandle) -> Result<(), String> {
+    show_main_window_impl(&app)
+}
+
+#[tauri::command]
+fn hide_main_window(app: AppHandle) -> Result<(), String> {
+    hide_main_window_impl(&app)
+}
+
+#[tauri::command]
+fn set_tray_status(app: AppHandle, message: String) -> Result<(), String> {
+    set_tray_status_impl(&app, &message)
+}
+
+#[tauri::command]
+fn quit_app(app: AppHandle) {
+    if let Some(state) = app.try_state::<AppState>() {
+        state.allow_exit.store(true, Ordering::SeqCst);
+    }
+    app.exit(0);
+}
+
+#[tauri::command]
+fn get_context_menu_settings() -> ContextMenuSettings {
+    read_context_menu_settings()
+}
+
+#[tauri::command]
+fn set_context_menu_settings(normal: bool, quick: bool) -> Result<ContextMenuSettings, String> {
+    apply_context_menu_settings(normal, quick)?;
+    Ok(read_context_menu_settings())
+}
+
+#[tauri::command]
+async fn check_for_updates(
+    app: AppHandle,
+    state: tauri::State<'_, UpdateState>,
+) -> Result<Option<UpdatePayload>, String> {
+    let Some(update) = app
+        .updater_builder()
+        .build()
+        .map_err(|e| e.to_string())?
+        .check()
+        .await
+        .map_err(|e| e.to_string())?
+    else {
+        let mut pending = state.pending.lock().map_err(|e| e.to_string())?;
+        *pending = None;
+        return Ok(None);
+    };
+
+    let payload = UpdatePayload {
+        current_version: update.current_version.clone(),
+        version: update.version.clone(),
+        notes: update.body.clone(),
+        pub_date: update.date.map(|date| date.to_string()),
+    };
+
+    let mut pending = state.pending.lock().map_err(|e| e.to_string())?;
+    *pending = Some(update);
+
+    Ok(Some(payload))
+}
+
+#[tauri::command]
+async fn install_pending_update(
+    app: AppHandle,
+    state: tauri::State<'_, UpdateState>,
+) -> Result<(), String> {
+    let update = {
+        let mut pending = state.pending.lock().map_err(|e| e.to_string())?;
+        pending
+            .take()
+            .ok_or_else(|| "Нет подготовленного обновления".to_string())?
+    };
+
+    update
+        .download_and_install(|_, _| {}, || {})
+        .await
+        .map_err(|e| e.to_string())?;
+
+    app.restart();
+}
+
 fn run_sidecar(app: AppHandle, args: Vec<String>) -> Result<(), String> {
     let script = sidecar_path(&app)?
         .canonicalize()
@@ -127,11 +429,20 @@ fn run_sidecar(app: AppHandle, args: Vec<String>) -> Result<(), String> {
     }
 
     let node = node_command()?;
-    let mut child = Command::new(node)
+    let mut command = Command::new(node);
+    command
         .arg(normalize_path_for_node(&script))
         .args(&args)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    #[cfg(target_os = "windows")]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    let mut child = command
         .spawn()
         .map_err(|e| format!("Failed to start optimizer: {}", e))?;
 
@@ -377,10 +688,55 @@ fn get_launch_path() -> Option<String> {
     get_launch_paths().into_iter().next()
 }
 
+fn emit_launch_requested(app: &AppHandle, args: Vec<String>) {
+    let is_quick = args.iter().any(|arg| arg == "--quick");
+    let payload = LaunchPayload {
+        mode: if is_quick {
+            "quick".to_string()
+        } else {
+            "normal".to_string()
+        },
+        paths: args
+            .into_iter()
+            .filter(|arg| arg != "--quick" && is_valid_launch_target(arg))
+            .collect(),
+    };
+
+    if payload.paths.is_empty() {
+        return;
+    }
+
+    let _ = app.emit("launch_requested", payload);
+}
+
 fn main() {
     tauri::Builder::default()
+        .manage(AppState::default())
+        .manage(UpdateState::default())
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            let is_quick = args.iter().any(|arg| arg == "--quick");
+            emit_launch_requested(app, args);
+            if !is_quick {
+                let _ = show_main_window_impl(app);
+            }
+        }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
+        .setup(|app| {
+            #[cfg(desktop)]
+            app.handle()
+                .plugin(tauri_plugin_updater::Builder::new().build())
+                .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })?;
+
+            setup_tray(app)?;
+
+            if is_quick_launch() {
+                let _ = hide_main_window_impl(app.handle());
+                let _ = set_tray_status_impl(app.handle(), "Быстрая оптимизация запущена");
+            }
+
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             open_zip_dialog,
             open_zip_dialog_multi,
@@ -396,7 +752,45 @@ fn main() {
             get_launch_paths,
             get_launch_path,
             get_runtime_debug,
+            show_main_window,
+            hide_main_window,
+            set_tray_status,
+            quit_app,
+            get_context_menu_settings,
+            set_context_menu_settings,
+            check_for_updates,
+            install_pending_update,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .on_window_event(|window, event| {
+            if window.label() != "main" {
+                return;
+            }
+
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                let app = window.app_handle();
+                let allow_exit = app
+                    .try_state::<AppState>()
+                    .map(|state| state.allow_exit.load(Ordering::SeqCst))
+                    .unwrap_or(false);
+
+                if !allow_exit {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
+        })
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            if let RunEvent::ExitRequested { api, .. } = event {
+                let allow_exit = app
+                    .try_state::<AppState>()
+                    .map(|state| state.allow_exit.load(Ordering::SeqCst))
+                    .unwrap_or(false);
+
+                if !allow_exit {
+                    api.prevent_exit();
+                }
+            }
+        });
 }
