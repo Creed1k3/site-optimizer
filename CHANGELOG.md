@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.5.0
+
+- version bump only
+
+## 0.4.8
+
+- fixed quick optimization from the Windows context menu for a single site
+- changed single quick launches to auto-optimize, auto-export, and close after a short delay
+- refined the 10-second result countdown behavior
+- continued UI cleanup for the running and updater flows
+
 ## 0.4.7
 
 - fixed the 10-second auto-close countdown on result screens

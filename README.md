@@ -1,4 +1,4 @@
-# Site Optimizer v0.4.7
+# Site Optimizer v0.5.0
 
 `Site Optimizer` — десктопное приложение на `Tauri 2 + React` для оптимизации сайтов из `ZIP`-архива или папки.
 

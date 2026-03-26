@@ -1118,7 +1118,7 @@ export default function App() {
           <button className="settings-btn" type="button" onClick={() => setIsSettingsOpen(true)} aria-label={settingsTitle}>
             <span className="settings-btn-icon">⚙</span>
           </button>
-          <span className="header-version">v0.4.7</span>
+          <span className="header-version">v0.5.0</span>
         </div>
       </header>
 
