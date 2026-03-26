@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.4.7
+
+- fixed the 10-second auto-close countdown on result screens
+- simplified optimization-stage control icons and aligned them with the rest of the UI
+- removed installer-time context menu questions
+- kept context menu management inside app settings only
+- refreshed versioning and release metadata
+
+## 0.4.5
+
+- promoted the current stabilization build to the new release line
+- keeps improved updater progress, close handling, pause controls, and auto-close flow
+
 ## 0.4.4
 
 - added visible in-app updater progress with download state, speed, and ETA

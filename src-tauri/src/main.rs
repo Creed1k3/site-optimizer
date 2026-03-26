@@ -17,6 +17,7 @@ use winreg::{enums::HKEY_CURRENT_USER, RegKey};
 struct AppState {
     allow_exit: AtomicBool,
     current_pid: AtomicU32,
+    is_busy: AtomicBool,
 }
 
 #[derive(Default)]
@@ -131,6 +132,15 @@ fn show_main_window_impl(app: &AppHandle) -> Result<(), String> {
     window.show().map_err(|e| e.to_string())?;
     window.unminimize().map_err(|e| e.to_string())?;
     window.set_focus().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn hide_main_window_impl(app: &AppHandle) -> Result<(), String> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "Main window not found".to_string())?;
+
+    window.hide().map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -261,6 +271,18 @@ fn get_runtime_debug(app: AppHandle) -> Vec<String> {
 #[tauri::command]
 fn show_main_window(app: AppHandle) -> Result<(), String> {
     show_main_window_impl(&app)
+}
+
+#[tauri::command]
+fn hide_main_window(app: AppHandle) -> Result<(), String> {
+    hide_main_window_impl(&app)
+}
+
+#[tauri::command]
+fn set_activity_state(app: AppHandle, is_busy: bool) {
+    if let Some(state) = app.try_state::<AppState>() {
+        state.is_busy.store(is_busy, Ordering::SeqCst);
+    }
 }
 
 #[tauri::command]
@@ -753,8 +775,11 @@ fn main() {
         .manage(AppState::default())
         .manage(UpdateState::default())
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            let is_quick = args.iter().any(|arg| arg == "--quick");
             emit_launch_requested(app, args);
-            let _ = show_main_window_impl(app);
+            if !is_quick {
+                let _ = show_main_window_impl(app);
+            }
         }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
@@ -763,6 +788,10 @@ fn main() {
             app.handle()
                 .plugin(tauri_plugin_updater::Builder::new().build())
                 .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })?;
+
+            if get_launch_mode() == "quick" {
+                let _ = hide_main_window_impl(&app.handle());
+            }
 
             Ok(())
         })
@@ -782,6 +811,8 @@ fn main() {
             get_launch_path,
             get_runtime_debug,
             show_main_window,
+            hide_main_window,
+            set_activity_state,
             stop_current_operation,
             quit_app,
             get_context_menu_settings,
@@ -796,12 +827,17 @@ fn main() {
 
             if let WindowEvent::CloseRequested { api, .. } = event {
                 let app = window.app_handle();
-                let allow_exit = app
+                let (allow_exit, is_busy) = app
                     .try_state::<AppState>()
-                    .map(|state| state.allow_exit.load(Ordering::SeqCst))
-                    .unwrap_or(false);
+                    .map(|state| {
+                        (
+                            state.allow_exit.load(Ordering::SeqCst),
+                            state.is_busy.load(Ordering::SeqCst),
+                        )
+                    })
+                    .unwrap_or((false, false));
 
-                if !allow_exit {
+                if !allow_exit && is_busy {
                     api.prevent_close();
                     emit_close_requested(&app);
                 }
@@ -811,12 +847,17 @@ fn main() {
         .expect("error while building tauri application")
         .run(|app, event| {
             if let RunEvent::ExitRequested { api, .. } = event {
-                let allow_exit = app
+                let (allow_exit, is_busy) = app
                     .try_state::<AppState>()
-                    .map(|state| state.allow_exit.load(Ordering::SeqCst))
-                    .unwrap_or(false);
+                    .map(|state| {
+                        (
+                            state.allow_exit.load(Ordering::SeqCst),
+                            state.is_busy.load(Ordering::SeqCst),
+                        )
+                    })
+                    .unwrap_or((false, false));
 
-                if !allow_exit {
+                if !allow_exit && is_busy {
                     api.prevent_exit();
                 }
             }

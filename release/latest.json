@@ -1,11 +1,11 @@
 {
-  "version": "0.4.4",
-  "notes": "Stability improvements, updater progress UI, close confirmation, batch pause/resume, and quick-flow fixes.",
-  "pub_date": "2026-03-26T07:33:41.546945+03:00",
-  "platforms": {
-    "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTNFhsNG1vRTVvbUZBNCtlNTdmMldDYXFyaFNSd1FEMC9xd3JpUWE5a0xPbXhGOTJCNmphcDBpWFlUalJFT0Q0VWxJMHFYR1pwQUNDUkM1Z21XeWNZWlNkQUpNdzg4VEEwPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzc0NDk5NDUzCWZpbGU6U2l0ZSBPcHRpbWl6ZXJfMC40LjRfeDY0LXNldHVwLmV4ZQozKzVPblVBVysrakhHSkFKOHlxbmlxY1F0S0NuUC9CWnRIYmdNQXY2WWMrK2g0N1NFWTdBc3dKQ3duSTlpdGNWNWM5TWp6cXJlZmlBaGFwTGVZYkhEQT09Cg==",
-      "url": "https://github.com/Creed1k3/site-optimizer/releases/download/v0.4.4/Site%20Optimizer_0.4.4_x64-setup.exe"
+    "version": "0.4.7",
+    "notes": "???????????????? ?????: ????????? ?????? ????????????, ???????? ?????? ????? ? ?????????, ????????? ???????????? ???? ?????????? ????????? ? ??????????, ???????? README ? ????????? UI.",
+    "pub_date": "2026-03-26T09:04:56+03:00",
+    "platforms": {
+        "windows-x86_64": {
+            "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTNFhsNG1vRTVvbUI4NllPQjJRUXJUaHlOMkxtTlMzaWdMa1hOREpZNVpLaTl3NGJWZGxKUjRSZU80b0RFeU8zcVE3U1NzcFJjbDVaQ1p1bTBjaHhFSzVLakJFZDdSNHdFPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzc0NTA0ODE5CWZpbGU6U2l0ZSBPcHRpbWl6ZXJfMC40LjdfeDY0LXNldHVwLmV4ZQpvdjlyNG5OMEMya0JCcGt6RnVDT1pqQ0hOQTRNeDZrYnJZZWdYWEQzbEZKQ0pXUWpSY2VyYS9aUjdnd2RaQmFDa0xFd3ByM0lWMnRMb3VTa2xKYXFBQT09Cg==",
+            "url": "https://github.com/Creed1k3/site-optimizer/releases/latest/download/installer.exe"
+        }
     }
-  }
 }

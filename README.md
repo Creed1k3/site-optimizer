@@ -1,147 +1,150 @@
-# Site Optimizer v0.4.4
+# Site Optimizer v0.4.7
 
-Desktop app on Tauri 2 + React for optimizing website image assets from a ZIP archive or a folder.
+`Site Optimizer` — десктопное приложение на `Tauri 2 + React` для оптимизации сайтов из `ZIP`-архива или папки.
 
-The app can:
-- open a site from a `.zip` archive or a folder
-- convert supported images to `webp` when it is actually beneficial
-- rewrite image references in code
-- review the result before export
-- export as a new ZIP or folder
-- run quick batch optimization for multiple sites
+Приложение умеет:
+- открывать сайт из `.zip` или из папки
+- конвертировать `png / jpg / jpeg / gif` в `webp`, только если это реально выгодно по размеру
+- обновлять ссылки на изображения в коде
+- убирать `srcset / imagesrcset / sizes`, когда это нужно
+- показывать экран проверки перед экспортом
+- экспортировать результат в `ZIP` или в папку
+- запускать быструю пакетную оптимизацию для нескольких сайтов
+- включать и выключать пункты контекстного меню Windows из настроек приложения
+- предлагать обновление приложения через `GitHub Releases`
 
-## Features
+## Возможности
 
-- Input modes: `ZIP archive` or `Folder`
-- Export modes: `ZIP archive` or `Folder`
-- Quick batch optimization for multiple sites
-- Context menu integration on Windows:
-  - `Оптимизировать сайт`
-  - `Быстро оптимизировать сайт`
-- Optional safe cleanup:
-  - remove unused images
-  - deduplicate identical images by content
-- RU / EN interface
-- Update prompt support through GitHub Releases + Tauri Updater
-- In-app update progress with status, speed, and ETA
+- Режимы входа:
+  - `ZIP-архив`
+  - `Папка`
+- Режимы экспорта:
+  - `ZIP-архив`
+  - `Папка`
+- Дополнительные опции очистки:
+  - удаление неиспользуемых картинок
+  - дедупликация одинаковых изображений по содержимому
+- Интерфейс:
+  - `Русский`
+  - `English`
+- Быстрый пакетный режим для нескольких сайтов
+- Встроенный updater с проверкой новой версии и прогрессом обновления
 
-## Image handling
+## Как работает оптимизация
 
-Supported input formats:
+Поддерживаемые входные форматы:
 - `png`
 - `jpg`
 - `jpeg`
 - `gif`
 
-Optimization rules:
-- images are converted to `webp`
-- animated `gif` is kept as original if converted `webp` is larger
-- suspicious or dynamic references are skipped instead of blindly rewritten
-- collisions like `image.png` and `image.jpg` are handled safely so they do not overwrite each other
+Основные правила:
+- изображения переводятся в `webp`
+- если после конвертации файл получается больше, оригинал сохраняется
+- для анимированных `gif` действует та же безопасная проверка по размеру
+- подозрительные или динамические ссылки не переписываются вслепую
+- коллизии имен вроде `image.png` и `image.jpg` обрабатываются безопасно
 
-## How It Works
+## Режимы работы
 
-### Standard mode
+### Обычный режим
 
-1. Select a ZIP archive or a folder.
-2. The app prepares a working copy.
-3. Images are scanned, optimized and references are updated.
-4. You review the result.
-5. Export to ZIP or folder.
+1. Выбирается `ZIP` или папка сайта.
+2. Приложение готовит рабочую копию.
+3. Изображения анализируются и оптимизируются.
+4. Пользователь проверяет результат.
+5. Результат экспортируется в `ZIP` или в папку.
 
-### Quick mode
+### Быстрый режим
 
-1. Select multiple sites or use the Windows context menu quick action.
-2. Sites are processed one by one automatically.
-3. Results are saved next to the originals.
-4. Quick launches can auto-close shortly after showing the result summary.
+1. Выбирается сразу несколько сайтов.
+2. Приложение обрабатывает их автоматически по очереди.
+3. Результаты сохраняются рядом с исходниками.
+4. После завершения показывается экран итогов.
 
-## Context Menu
+## Контекстное меню Windows
 
-The installer can add Windows context menu entries for:
-- ZIP archives
-- folders
+Пункты контекстного меню для:
+- `Оптимизировать сайт`
+- `Быстро оптимизировать сайт`
 
-You can also enable or disable them later from the app settings via the gear button near the build version.
+настраиваются из самого приложения через кнопку с шестеренкой рядом с версией.
 
-## Auto Updates
+## Автообновления
 
-The app is prepared for auto updates through GitHub Releases using the Tauri updater plugin.
+Приложение поддерживает обновление через `GitHub Releases` и `Tauri Updater`.
 
-Important:
-- update signing is required
-- the private signing key must stay secret
-- the public key is stored in app config
+Для этого используются:
+- `installer.exe`
+- `installer.exe.sig`
+- `latest.json`
 
-## Project Structure
+Важно:
+- приватный ключ подписи должен храниться только локально
+- публичный ключ находится в конфиге приложения
+- релизы для updater должны быть подписаны
 
-```text
-site-optimizer/
-├── src/
-│   ├── App.tsx
-│   └── App.css
-├── sidecar/
-│   ├── optimizer.js
-│   ├── package.json
-│   └── node_modules/
-├── src-tauri/
-│   ├── src/main.rs
-│   ├── Cargo.toml
-│   ├── tauri.conf.json
-│   ├── windows-installer-hooks.nsh
-│   └── capabilities/default.json
-├── package.json
-└── README.md
-```
+## Что нужно для сборки из исходного кода
 
-## Development
+Перед сборкой должны быть установлены:
 
-Install frontend dependencies:
+- `Node.js`
+- `npm`
+- `Rust`
+- `Microsoft Visual Studio C++ Build Tools` или Visual Studio с desktop C++ toolchain
+- `WebView2`
+
+Рекомендуется:
+- `Node.js 20+`
+- актуальный `Rust stable`
+
+## Сборка из исходного кода
+
+1. Установить зависимости фронтенда:
 
 ```powershell
 npm install
 ```
 
-Run in development:
-
-```powershell
-npm.cmd run tauri dev
-```
-
-Build release:
+2. Собрать приложение:
 
 ```powershell
 npm.cmd run tauri build
 ```
 
-## Signed Build For Updates
+Готовые сборки обычно появляются здесь:
+- `src-tauri/target/release/bundle/nsis`
+- `src-tauri/target/release/bundle/msi`
 
-Before building updater-enabled releases:
+## Подписанная сборка для автообновлений
+
+Если нужен updater-релиз, перед сборкой нужно выставить переменные окружения:
 
 ```powershell
-$env:TAURI_SIGNING_PRIVATE_KEY_PATH = ".\src-tauri\signing\site-optimizer.key"
-$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = "your-password"
+$env:TAURI_SIGNING_PRIVATE_KEY = Get-Content .\src-tauri\signing\site-optimizer.key -Raw
+$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = "ваш-пароль"
 npm.cmd run tauri build
 ```
 
-## Security Note
+После этого для релиза используются:
+- `installer.exe`
+- `installer.exe.sig`
+- `latest.json`
 
-Do not commit:
+## Важно по безопасности
+
+Нельзя коммитить в репозиторий:
 - `src-tauri/signing/site-optimizer.key`
-- any private signing key
-- any private password
+- любые приватные ключи подписи
+- пароли от ключей
 
-The `src-tauri/signing/` folder is already ignored in git.
+Папка `src-tauri/signing/` должна оставаться вне git.
 
-## Output
+## Результат работы приложения
 
-The app creates:
-- `<name>_optimized.zip`
-- `<name>_optimized/`
+Приложение создает:
+- `<имя>_optimized.zip`
+- `<имя>_optimized/`
 
-Temporary working directories use:
-- `<name>_optimizer_work/`
-
-## Current Version
-
-`v0.4.2`
+Временная рабочая папка:
+- `<имя>_optimizer_work/`
