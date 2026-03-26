@@ -67,6 +67,15 @@ interface UpdateInfo {
   pub_date?: string | null;
 }
 
+interface UpdateDownloadProgress {
+  state: "starting" | "downloading" | "installing" | "done";
+  downloaded: number;
+  total?: number | null;
+  bytes_per_second: number;
+  eta_seconds?: number | null;
+  message: string;
+}
+
 const translations = {
   ru: {
     languageLabel: "Язык",
@@ -186,6 +195,28 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
 }
 
+function formatSpeed(bytesPerSecond: number, locale: Locale): string {
+  if (!bytesPerSecond || bytesPerSecond <= 0) {
+    return locale === "ru" ? "считаем скорость…" : "measuring speed…";
+  }
+
+  return `${formatBytes(Math.round(bytesPerSecond))}/${locale === "ru" ? "с" : "s"}`;
+}
+
+function formatEta(seconds: number | null | undefined, locale: Locale): string {
+  if (seconds == null || seconds <= 0) {
+    return locale === "ru" ? "еще немного…" : "almost there…";
+  }
+
+  const mins = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  if (mins <= 0) {
+    return locale === "ru" ? `примерно ${secs} сек.` : `about ${secs}s`;
+  }
+
+  return locale === "ru" ? `примерно ${mins} мин ${secs} сек.` : `about ${mins}m ${secs}s`;
+}
+
 function ZipIcon() {
   return (
     <span className="segmented-icon" aria-hidden="true">
@@ -245,32 +276,31 @@ export default function App() {
   const [isSavingSettings, setIsSavingSettings] = useState(false);
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
   const [isInstallingUpdate, setIsInstallingUpdate] = useState(false);
+  const [updateProgress, setUpdateProgress] = useState<UpdateDownloadProgress | null>(null);
+  const [closePromptOpen, setClosePromptOpen] = useState(false);
+  const [batchPaused, setBatchPaused] = useState(false);
+  const [autoCloseSeconds, setAutoCloseSeconds] = useState<number | null>(null);
   const unlisten = useRef<(() => void) | null>(null);
   const floatCounter = useRef(0);
   const languageSwitcherRef = useRef<HTMLDivElement | null>(null);
+  const batchPausedRef = useRef(false);
+  const stopRequestedRef = useRef(false);
+  const autoCloseEnabledRef = useRef(false);
   const t = translations[locale];
-
-  const setTrayStatus = useCallback(async (message: string) => {
-    try {
-      await invoke("set_tray_status", { message });
-    } catch {
-      // tray may be unavailable in dev edge cases
-    }
-  }, []);
-
-  const hideToTray = useCallback(async () => {
-    try {
-      await invoke("hide_main_window");
-    } catch {
-      // ignore hide failures
-    }
-  }, []);
 
   const showMainWindow = useCallback(async () => {
     try {
       await invoke("show_main_window");
     } catch {
       // ignore show failures
+    }
+  }, []);
+
+  const stopCurrentOperation = useCallback(async () => {
+    try {
+      await invoke("stop_current_operation");
+    } catch {
+      // ignore stop failures
     }
   }, []);
 
@@ -318,11 +348,47 @@ export default function App() {
 
   const installUpdate = useCallback(async () => {
     setIsInstallingUpdate(true);
+    setUpdateProgress({
+      state: "starting",
+      downloaded: 0,
+      total: null,
+      bytes_per_second: 0,
+      eta_seconds: null,
+      message: locale === "ru" ? "Подготовка обновления…" : "Preparing update…"
+    });
     try {
       await invoke("install_pending_update");
+    } catch (error) {
+      setErrorMsg(String(error));
+      setPhase("error");
+      setUpdateInfo(null);
+      setUpdateProgress(null);
     } finally {
       setIsInstallingUpdate(false);
     }
+  }, [locale]);
+
+  const stopActiveWork = useCallback(async (closeAfterStop = false) => {
+    stopRequestedRef.current = true;
+    setBatchPaused(false);
+    setClosePromptOpen(false);
+    await stopCurrentOperation();
+    if (closeAfterStop) {
+      window.setTimeout(() => {
+        void quitApp();
+      }, 120);
+    }
+  }, [quitApp, stopCurrentOperation]);
+
+  const resumeAfterClosePrompt = useCallback(() => {
+    setClosePromptOpen(false);
+    if (phase === "batching") {
+      setBatchPaused(false);
+    }
+  }, [phase]);
+
+  const toggleBatchPause = useCallback(() => {
+    setBatchPaused((value) => !value);
   }, []);
 
   useEffect(() => {
@@ -338,8 +404,8 @@ export default function App() {
   }, [dedupeImages]);
 
   useEffect(() => {
-    void setTrayStatus("");
-  }, [setTrayStatus]);
+    batchPausedRef.current = batchPaused;
+  }, [batchPaused]);
 
   useEffect(() => {
     void refreshContextMenuSettings();
@@ -348,6 +414,8 @@ export default function App() {
   useEffect(() => {
     let cancelled = false;
     let unlistenLaunchRequested: (() => void) | null = null;
+    let unlistenCloseRequested: (() => void) | null = null;
+    let unlistenUpdateProgress: (() => void) | null = null;
 
     (async () => {
       try {
@@ -405,12 +473,12 @@ export default function App() {
         setInputMode(isZip ? "zip" : "folder");
         setInputPath(firstPath);
 
+        void showMainWindow();
+
         if (payload.mode === "quick") {
           void runQuickBatchFromPaths(payload.paths, isZip ? "zip" : "folder", true);
           return;
         }
-
-        void showMainWindow();
         setPhase("idle");
         setBatchResults([]);
         setResult(null);
@@ -420,13 +488,33 @@ export default function App() {
         setCurrentFile("");
         setProgress({ done: 0, total: 0, percent: 0, status: "" });
       });
+
+      unlistenCloseRequested = await listen("window_close_requested", () => {
+        const busy = phase === "preparing" || phase === "running" || phase === "exporting" || phase === "batching";
+
+        if (!busy) {
+          void quitApp();
+          return;
+        }
+
+        if (phase === "batching") {
+          setBatchPaused(true);
+        }
+        setClosePromptOpen(true);
+      });
+
+      unlistenUpdateProgress = await listen<UpdateDownloadProgress>("update_download_progress", (event) => {
+        setUpdateProgress(event.payload);
+      });
     })();
 
     return () => {
       cancelled = true;
       unlistenLaunchRequested?.();
+      unlistenCloseRequested?.();
+      unlistenUpdateProgress?.();
     };
-  }, [checkForUpdates, showMainWindow]);
+  }, [checkForUpdates, phase, quitApp, showMainWindow]);
 
   useEffect(() => {
     const handlePointerDown = (event: MouseEvent) => {
@@ -438,6 +526,37 @@ export default function App() {
     window.addEventListener("mousedown", handlePointerDown);
     return () => window.removeEventListener("mousedown", handlePointerDown);
   }, []);
+  useEffect(() => {
+    if (autoCloseSeconds === null) return;
+    if (autoCloseSeconds <= 0) {
+      void quitApp();
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      setAutoCloseSeconds((value) => (value === null ? null : value - 1));
+    }, 1000);
+
+    return () => window.clearTimeout(timer);
+  }, [autoCloseSeconds, quitApp]);
+
+  useEffect(() => {
+    if (autoCloseSeconds === null) return;
+
+    const cancelAutoClose = () => {
+      setAutoCloseSeconds(null);
+      autoCloseEnabledRef.current = false;
+    };
+
+    window.addEventListener("pointerdown", cancelAutoClose);
+    window.addEventListener("keydown", cancelAutoClose);
+
+    return () => {
+      window.removeEventListener("pointerdown", cancelAutoClose);
+      window.removeEventListener("keydown", cancelAutoClose);
+    };
+  }, [autoCloseSeconds]);
+
 
   const currentLanguageLabel = locale === "ru" ? t.languageNative : t.languageEnglish;
   const alternateLocale: Locale = locale === "ru" ? "en" : "ru";
@@ -525,6 +644,12 @@ export default function App() {
     if (tab === "deleted") return t.tabDeleted;
     return t.tabErrors;
   };
+
+  const waitWhileBatchPaused = useCallback(async () => {
+    while (batchPausedRef.current && !stopRequestedRef.current) {
+      await new Promise((resolve) => window.setTimeout(resolve, 180));
+    }
+  }, []);
 
   const optimizeSingleForBatch = async (path: string, mode: InputMode) => {
     const dir = mode === "zip"
@@ -636,6 +761,11 @@ export default function App() {
   const runAll = async () => {
     if (!inputPath) return;
     await startListening();
+    autoCloseEnabledRef.current = false;
+    stopRequestedRef.current = false;
+    setBatchPaused(false);
+    setClosePromptOpen(false);
+    setAutoCloseSeconds(null);
     setPhase("preparing");
     setFloatingFiles([]);
     setCurrentFile("");
@@ -671,6 +801,9 @@ export default function App() {
   const doExport = async () => {
     if (!workDir || !inputPath) return;
     await startListening();
+    stopRequestedRef.current = false;
+    setClosePromptOpen(false);
+    setAutoCloseSeconds(null);
     setPhase("exporting");
     setErrorMsg("");
     setProgress({
@@ -700,7 +833,7 @@ export default function App() {
     await runQuickBatchFromPaths(paths, inputMode, false);
   };
 
-  const runQuickBatchFromPaths = async (paths: string[], mode: InputMode, autoQuit: boolean) => {
+  const runQuickBatchFromPaths = async (paths: string[], mode: InputMode, autoCloseAfterFinish: boolean) => {
     setPhase("batching");
     setBatchResults([]);
     setResult(null);
@@ -708,14 +841,26 @@ export default function App() {
     setErrorMsg("");
     setFloatingFiles([]);
     setCurrentFile("");
-    await setTrayStatus(locale === "ru" ? "Быстрая оптимизация запущена" : "Quick batch started");
-    await hideToTray();
+    setClosePromptOpen(false);
+    setBatchPaused(false);
+    stopRequestedRef.current = false;
+    autoCloseEnabledRef.current = autoCloseAfterFinish;
+    setAutoCloseSeconds(null);
 
     const nextResults: BatchSummaryItem[] = [];
 
     for (let index = 0; index < paths.length; index++) {
+      if (stopRequestedRef.current) {
+        break;
+      }
+
+      await waitWhileBatchPaused();
+      if (stopRequestedRef.current) {
+        break;
+      }
+
       const currentPath = paths[index];
-      const shortName = currentPath.split(/[\\/]/).pop() ?? currentPath;
+      const shortName = currentPath.split(/[\/]/).pop() ?? currentPath;
       setInputPath(currentPath);
       setInputMode(mode);
       setProgress({
@@ -724,14 +869,12 @@ export default function App() {
         percent: Math.round((index / paths.length) * 100),
         status: `${index + 1}/${paths.length}: ${shortName}`
       });
-      await setTrayStatus(
-        locale === "ru"
-          ? `Быстрая оптимизация: ${index + 1}/${paths.length} — ${shortName}`
-          : `Quick batch: ${index + 1}/${paths.length} - ${shortName}`
-      );
 
       try {
         const { out, donePayload } = await optimizeSingleForBatch(currentPath, mode);
+        if (stopRequestedRef.current) {
+          break;
+        }
         nextResults.push({
           input: currentPath,
           output: out,
@@ -739,6 +882,9 @@ export default function App() {
           savedBytes: donePayload.savedBytes
         });
       } catch (error: any) {
+        if (stopRequestedRef.current) {
+          break;
+        }
         nextResults.push({
           input: currentPath,
           success: false,
@@ -755,16 +901,10 @@ export default function App() {
       status: quickSummaryTitle
     });
     setPhase("batchDone");
-    const successCount = nextResults.filter((item) => item.success).length;
-    const errorCount = nextResults.length - successCount;
-    await setTrayStatus(
-      locale === "ru"
-        ? `Готово: успешно ${successCount}, ошибок ${errorCount}`
-        : `Done: ${successCount} success, ${errorCount} errors`
-    );
+    setBatchPaused(false);
 
-    if (autoQuit) {
-      await quitApp();
+    if (autoCloseAfterFinish) {
+      setAutoCloseSeconds(10);
     }
   };
 
@@ -786,11 +926,33 @@ export default function App() {
     setFloatingFiles([]);
     setCurrentFile("");
     setProgress({ done: 0, total: 0, percent: 0, status: "" });
-    await setTrayStatus("");
-    await showMainWindow();
+    setClosePromptOpen(false);
+    setBatchPaused(false);
+    setAutoCloseSeconds(null);
+    autoCloseEnabledRef.current = false;
+    stopRequestedRef.current = false;
   };
 
   const stepIndex = { idle: 0, preparing: 0, running: 1, reviewing: 2, exporting: 3, done: 3, error: 0, batching: 1, batchDone: 3 };
+  const isBusyPhase = phase === "preparing" || phase === "running" || phase === "exporting" || phase === "batching";
+  const pauseLabel = locale === "ru" ? "\u041f\u0430\u0443\u0437\u0430" : "Pause";
+  const resumeLabel = locale === "ru" ? "\u041f\u0440\u043e\u0434\u043e\u043b\u0436\u0438\u0442\u044c" : "Resume";
+  const stopLabel = locale === "ru" ? "\u041e\u0441\u0442\u0430\u043d\u043e\u0432\u0438\u0442\u044c" : "Stop";
+  const closePromptTitle = locale === "ru" ? "\u041f\u0440\u043e\u0446\u0435\u0441\u0441 \u0435\u0449\u0435 \u0438\u0434\u0435\u0442" : "Process is still running";
+  const closePromptHint = locale === "ru"
+    ? "\u041e\u0441\u0442\u0430\u043d\u043e\u0432\u0438\u0442\u044c \u0442\u0435\u043a\u0443\u0449\u0443\u044e \u0437\u0430\u0434\u0430\u0447\u0443 \u0438 \u0437\u0430\u043a\u0440\u044b\u0442\u044c \u043f\u0440\u0438\u043b\u043e\u0436\u0435\u043d\u0438\u0435?"
+    : "Stop the current task and close the app?";
+  const autoCloseHint = locale === "ru"
+    ? `\u0410\u0432\u0442\u043e\u0437\u0430\u043a\u0440\u044b\u0442\u0438\u0435 \u0447\u0435\u0440\u0435\u0437 ${autoCloseSeconds} \u0441\u0435\u043a.`
+    : `Closing automatically in ${autoCloseSeconds}s.`;
+  const updateProgressPercent = updateProgress?.total
+    ? Math.max(2, Math.min(100, Math.round((updateProgress.downloaded / updateProgress.total) * 100)))
+    : (updateProgress?.state === "installing" ? 100 : 8);
+  const updateProgressLabel = updateProgress?.state === "installing"
+    ? (locale === "ru" ? "Установка обновления" : "Installing update")
+    : updateProgress?.state === "done"
+      ? (locale === "ru" ? "Готово к перезапуску" : "Ready to restart")
+      : (locale === "ru" ? "Загрузка обновления" : "Downloading update");
   const currentStep = stepIndex[phase] ?? 0;
   const filteredReport = result?.report.filter((item) => activeTab === "errors" ? item.type === "error" : item.type === activeTab) ?? [];
   const batchSuccessCount = batchResults.filter((item) => item.success).length;
@@ -844,7 +1006,7 @@ export default function App() {
           <button className="settings-btn" type="button" onClick={() => setIsSettingsOpen(true)} aria-label={settingsTitle}>
             <span className="settings-btn-icon">⚙</span>
           </button>
-          <span className="header-version">v0.4.2</span>
+          <span className="header-version">v0.4.4</span>
         </div>
       </header>
 
@@ -931,6 +1093,19 @@ export default function App() {
             </div>
             <div className="progress-label">
               {(phase === "running" || phase === "batching") && progress.total > 0 ? t.filesProgress(progress.done, progress.total, progress.percent) : ""}
+            </div>
+
+            <div className="progress-actions">
+              {phase === "batching" && (
+                <button className="btn-ghost" onClick={() => void toggleBatchPause()}>
+                  {batchPaused ? resumeLabel : pauseLabel}
+                </button>
+              )}
+              {isBusyPhase && (
+                <button className="btn-ghost btn-ghost--danger" onClick={() => void stopActiveWork()}>
+                  {stopLabel}
+                </button>
+              )}
             </div>
 
             {(phase === "running" || phase === "batching") && progress.total > 0 && (
@@ -1071,6 +1246,7 @@ export default function App() {
             <p className="done-title">{t.exportDone}</p>
             <p className="done-path">{outputPath}</p>
             <p className="done-hint">{exportMode === "zip" ? t.exportDoneZip : t.exportDoneFolder}</p>
+            {autoCloseSeconds !== null && <p className="done-hint done-hint--countdown">{autoCloseHint}</p>}
             <button className="btn-primary" onClick={() => void reset()}>{t.optimizeAnother}</button>
           </div>
         )}
@@ -1088,12 +1264,12 @@ export default function App() {
               <div className="result-stats">
                 <div className="stat">
                   <span className="stat-value stat-value--teal">{batchSuccessCount}</span>
-                  <span className="stat-label">успешно</span>
+                  <span className="stat-label">{locale === "ru" ? "\u0443\u0441\u043f\u0435\u0448\u043d\u043e" : "success"}</span>
                 </div>
                 <div className="stat-divider" />
                 <div className="stat">
                   <span className="stat-value stat-value--red">{batchErrorCount}</span>
-                  <span className="stat-label">с ошибками</span>
+                  <span className="stat-label">{locale === "ru" ? "\u0441 \u043e\u0448\u0438\u0431\u043a\u0430\u043c\u0438" : "with errors"}</span>
                 </div>
               </div>
             </div>
@@ -1111,6 +1287,7 @@ export default function App() {
                 ))}
               </div>
             </div>
+            {autoCloseSeconds !== null && <p className="done-hint done-hint--countdown">{autoCloseHint}</p>}
             <button className="btn-primary" onClick={() => void reset()}>{t.optimizeAnother}</button>
           </div>
         )}
@@ -1130,6 +1307,33 @@ export default function App() {
             <button className="btn-ghost" onClick={() => void reset()}>{t.tryAgain}</button>
           </div>
         )}
+        {closePromptOpen && (
+          <div className="modal-backdrop" onClick={resumeAfterClosePrompt}>
+            <div className="modal-card" onClick={(event) => event.stopPropagation()}>
+              <div className="modal-head">
+                <h3>{closePromptTitle}</h3>
+                <button type="button" className="modal-close" onClick={resumeAfterClosePrompt}>×</button>
+              </div>
+
+              <div className="modal-section">
+                <p className="update-hint">{closePromptHint}</p>
+                {phase === "batching" && (
+                  <p className="update-hint">{locale === "ru" ? "\u041f\u0430\u043a\u0435\u0442\u043d\u0430\u044f \u043e\u0447\u0435\u0440\u0435\u0434\u044c \u0443\u0436\u0435 \u043f\u043e\u0441\u0442\u0430\u0432\u043b\u0435\u043d\u0430 \u043d\u0430 \u043f\u0430\u0443\u0437\u0443." : "The batch queue is already paused."}</p>
+                )}
+              </div>
+
+              <div className="modal-actions">
+                <button className="btn-primary btn-primary--danger" onClick={() => void stopActiveWork(true)}>
+                  {locale === "ru" ? "\u041e\u0441\u0442\u0430\u043d\u043e\u0432\u0438\u0442\u044c \u0438 \u0437\u0430\u043a\u0440\u044b\u0442\u044c" : "Stop and close"}
+                </button>
+                <button className="btn-ghost" onClick={resumeAfterClosePrompt}>
+                  {locale === "ru" ? "\u041f\u0440\u043e\u0434\u043e\u043b\u0436\u0438\u0442\u044c \u0440\u0430\u0431\u043e\u0442\u0443" : "Keep working"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {isSettingsOpen && (
           <div className="modal-backdrop" onClick={() => setIsSettingsOpen(false)}>
             <div className="modal-card" onClick={(event) => event.stopPropagation()}>
@@ -1177,26 +1381,52 @@ export default function App() {
         )}
 
         {updateInfo && (
-          <div className="modal-backdrop" onClick={() => setUpdateInfo(null)}>
+          <div className="modal-backdrop" onClick={() => { if (!isInstallingUpdate) { setUpdateInfo(null); setUpdateProgress(null); } }}>
             <div className="modal-card" onClick={(event) => event.stopPropagation()}>
               <div className="modal-head">
                 <h3>{updateTitle}</h3>
-                <button type="button" className="modal-close" onClick={() => setUpdateInfo(null)}>×</button>
+                <button type="button" className="modal-close" onClick={() => { if (!isInstallingUpdate) { setUpdateInfo(null); setUpdateProgress(null); } }}>?</button>
               </div>
 
               <div className="modal-section">
                 <div className="update-version-line">
-                  {updateInfo.current_version} → {updateInfo.version}
+                  {updateInfo.current_version} ? {updateInfo.version}
                 </div>
                 <p className="update-hint">{updateHint}</p>
                 {updateInfo.notes && <div className="update-notes">{updateInfo.notes}</div>}
+                {updateProgress && (
+                  <div className="update-progress-card">
+                    <div className="update-progress-head">
+                      <span className="update-progress-title">{updateProgressLabel}</span>
+                      <span className="update-progress-percent">{updateProgressPercent}%</span>
+                    </div>
+                    <div className="update-progress-track">
+                      <div
+                        className={`update-progress-fill update-progress-fill--${updateProgress.state}`}
+                        style={{ width: `${updateProgressPercent}%` }}
+                      />
+                    </div>
+                    <div className="update-progress-meta">
+                      <span>{updateProgress.message}</span>
+                      {updateProgress.state === "downloading" && (
+                        <>
+                          <span>{formatSpeed(updateProgress.bytes_per_second, locale)}</span>
+                          <span>{formatEta(updateProgress.eta_seconds, locale)}</span>
+                        </>
+                      )}
+                      {updateProgress.state === "installing" && (
+                        <span>{locale === "ru" ? "??? ????????" : "Almost there?"}</span>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
 
               <div className="modal-actions">
                 <button className="btn-primary" disabled={isInstallingUpdate} onClick={() => void installUpdate()}>
-                  {isInstallingUpdate ? "..." : updateNowLabel}
+                  {isInstallingUpdate ? (locale === "ru" ? "??????????" : "Updating?") : updateNowLabel}
                 </button>
-                <button className="btn-ghost" onClick={() => setUpdateInfo(null)}>
+                <button className="btn-ghost" disabled={isInstallingUpdate} onClick={() => { setUpdateInfo(null); setUpdateProgress(null); }}>
                   {updateLaterLabel}
                 </button>
               </div>

@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.4.4
+
+- added visible in-app updater progress with download state, speed, and ETA
+- improved updater modal feedback during download and install
+- kept update prompt recurring on each launch of older installed versions
+
+## 0.4.3
+
+- removed tray-first behavior and restored predictable window closing
+- added close confirmation while work is still running
+- added batch pause/resume controls
+- added 10-second auto-close countdown after quick batch results
+- improved process stopping flow for active optimization
+- prepared quick launch flow for more reliable context-menu behavior
+
 ## 0.4.2
 
 - updater validation release for in-app update flow

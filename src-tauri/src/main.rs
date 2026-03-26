@@ -6,19 +6,17 @@ use std::io::{BufRead, BufReader};
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Mutex;
-use tauri::{
-    menu::{MenuBuilder, MenuItemBuilder},
-    tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Emitter, Manager, RunEvent, WindowEvent,
-};
+use std::time::Instant;
+use tauri::{AppHandle, Emitter, Manager, RunEvent, WindowEvent};
 use tauri_plugin_updater::{Update, UpdaterExt};
 use winreg::{enums::HKEY_CURRENT_USER, RegKey};
 
 #[derive(Default)]
 struct AppState {
     allow_exit: AtomicBool,
+    current_pid: AtomicU32,
 }
 
 #[derive(Default)]
@@ -38,6 +36,16 @@ struct UpdatePayload {
     version: String,
     notes: Option<String>,
     pub_date: Option<String>,
+}
+
+#[derive(Clone, serde::Serialize)]
+struct UpdateProgressPayload {
+    state: String,
+    downloaded: u64,
+    total: Option<u64>,
+    bytes_per_second: f64,
+    eta_seconds: Option<u64>,
+    message: String,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -93,7 +101,7 @@ fn node_command() -> Result<OsString, String> {
             && node_path
                 .extension()
                 .and_then(|ext| ext.to_str())
-                .map(|ext| ext.eq_ignore_ascii_case("exe") || ext.eq_ignore_ascii_case("cmd"))
+                .map(|ext| ext.eq_ignore_ascii_case("exe"))
                 .unwrap_or(false);
         if is_exe {
             return Ok(OsString::from(node));
@@ -115,10 +123,6 @@ fn node_command() -> Result<OsString, String> {
     Err("Node.js executable not found in PATH".to_string())
 }
 
-fn is_quick_launch() -> bool {
-    std::env::args().any(|arg| arg == "--quick")
-}
-
 fn show_main_window_impl(app: &AppHandle) -> Result<(), String> {
     let window = app
         .get_webview_window("main")
@@ -128,28 +132,6 @@ fn show_main_window_impl(app: &AppHandle) -> Result<(), String> {
     window.unminimize().map_err(|e| e.to_string())?;
     window.set_focus().map_err(|e| e.to_string())?;
     Ok(())
-}
-
-fn hide_main_window_impl(app: &AppHandle) -> Result<(), String> {
-    let window = app
-        .get_webview_window("main")
-        .ok_or_else(|| "Main window not found".to_string())?;
-
-    window.hide().map_err(|e| e.to_string())
-}
-
-fn set_tray_status_impl(app: &AppHandle, message: &str) -> Result<(), String> {
-    let tray = app
-        .tray_by_id("main-tray")
-        .ok_or_else(|| "Tray icon not found".to_string())?;
-
-    let tooltip = if message.trim().is_empty() {
-        "Site Optimizer".to_string()
-    } else {
-        format!("Site Optimizer\n{}", message)
-    };
-
-    tray.set_tooltip(Some(tooltip)).map_err(|e| e.to_string())
 }
 
 fn registry_shell_root(root: &str) -> Result<RegKey, String> {
@@ -196,7 +178,7 @@ fn apply_context_menu_settings(normal: bool, quick: bool) -> Result<(), String> 
             register_context_menu_entry(
                 root,
                 "SiteOptimizer",
-                "Оптимизировать сайт",
+                "\u{41e}\u{43f}\u{442}\u{438}\u{43c}\u{438}\u{437}\u{438}\u{440}\u{43e}\u{432}\u{430}\u{442}\u{44c} \u{441}\u{430}\u{439}\u{442}",
                 &format!("{exe} \"%1\""),
             )?;
         } else {
@@ -207,7 +189,7 @@ fn apply_context_menu_settings(normal: bool, quick: bool) -> Result<(), String> 
             register_context_menu_entry(
                 root,
                 "SiteOptimizerQuick",
-                "Быстро оптимизировать сайт",
+                "\u{411}\u{44b}\u{441}\u{442}\u{440}\u{43e} \u{43e}\u{43f}\u{442}\u{438}\u{43c}\u{438}\u{437}\u{438}\u{440}\u{43e}\u{432}\u{430}\u{442}\u{44c} \u{441}\u{430}\u{439}\u{442}",
                 &format!("{exe} --quick \"%1\""),
             )?;
         } else {
@@ -237,59 +219,6 @@ fn read_context_menu_settings() -> ContextMenuSettings {
         normal: has_normal,
         quick: has_quick,
     }
-}
-
-fn setup_tray(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
-    let show_item = MenuItemBuilder::with_id("show", "Показать Site Optimizer").build(app)?;
-    let hide_item = MenuItemBuilder::with_id("hide", "Свернуть в трей").build(app)?;
-    let quit_item = MenuItemBuilder::with_id("quit", "Выход").build(app)?;
-    let menu = MenuBuilder::new(app)
-        .items(&[&show_item, &hide_item, &quit_item])
-        .build()?;
-
-    let mut tray_builder = TrayIconBuilder::with_id("main-tray")
-        .menu(&menu)
-        .tooltip("Site Optimizer")
-        .show_menu_on_left_click(false)
-        .on_menu_event(|app: &AppHandle, event| match event.id().as_ref() {
-            "show" => {
-                let _ = show_main_window_impl(app);
-            }
-            "hide" => {
-                let _ = hide_main_window_impl(app);
-            }
-            "quit" => {
-                if let Some(state) = app.try_state::<AppState>() {
-                    state.allow_exit.store(true, Ordering::SeqCst);
-                }
-                app.exit(0);
-            }
-            _ => {}
-        })
-        .on_tray_icon_event(|tray: &TrayIcon, event| {
-            if let TrayIconEvent::Click {
-                button: MouseButton::Left,
-                button_state: MouseButtonState::Up,
-                ..
-            } = event
-            {
-                let app = tray.app_handle();
-                if let Some(window) = app.get_webview_window("main") {
-                    if window.is_visible().unwrap_or(true) {
-                        let _ = window.hide();
-                    } else {
-                        let _ = show_main_window_impl(&app);
-                    }
-                }
-            }
-        });
-
-    if let Some(icon) = app.default_window_icon().cloned() {
-        tray_builder = tray_builder.icon(icon);
-    }
-
-    tray_builder.build(app)?;
-    Ok(())
 }
 
 #[tauri::command]
@@ -335,13 +264,38 @@ fn show_main_window(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn hide_main_window(app: AppHandle) -> Result<(), String> {
-    hide_main_window_impl(&app)
-}
+fn stop_current_operation(app: AppHandle) -> Result<(), String> {
+    let Some(state) = app.try_state::<AppState>() else {
+        return Ok(());
+    };
 
-#[tauri::command]
-fn set_tray_status(app: AppHandle, message: String) -> Result<(), String> {
-    set_tray_status_impl(&app, &message)
+    let pid = state.current_pid.swap(0, Ordering::SeqCst);
+    if pid == 0 {
+        return Ok(());
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let mut command = Command::new("taskkill");
+        command
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+
+        command
+            .status()
+            .map_err(|e| format!("Не удалось остановить процесс: {}", e))?;
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = pid;
+    }
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -406,10 +360,84 @@ async fn install_pending_update(
             .ok_or_else(|| "Нет подготовленного обновления".to_string())?
     };
 
+    let started_at = Instant::now();
+    let app_for_progress = app.clone();
+
+    let _ = app.emit(
+        "update_download_progress",
+        UpdateProgressPayload {
+            state: "starting".to_string(),
+            downloaded: 0,
+            total: None,
+            bytes_per_second: 0.0,
+            eta_seconds: None,
+            message: "Подготовка обновления…".to_string(),
+        },
+    );
+
     update
-        .download_and_install(|_, _| {}, || {})
+        .download_and_install(
+            move |downloaded, total| {
+                let downloaded = downloaded as u64;
+                let elapsed = started_at.elapsed().as_secs_f64().max(0.001);
+                let bytes_per_second = downloaded as f64 / elapsed;
+                let eta_seconds = total.and_then(|full| {
+                    if downloaded >= full || bytes_per_second <= 1.0 {
+                        None
+                    } else {
+                        Some(((full - downloaded) as f64 / bytes_per_second).ceil() as u64)
+                    }
+                });
+
+                let message = if let Some(total) = total {
+                    format!("Скачано {} из {} байт", downloaded, total)
+                } else {
+                    format!("Скачано {} байт", downloaded)
+                };
+
+                let _ = app_for_progress.emit(
+                    "update_download_progress",
+                    UpdateProgressPayload {
+                        state: "downloading".to_string(),
+                        downloaded,
+                        total,
+                        bytes_per_second,
+                        eta_seconds,
+                        message,
+                    },
+                );
+            },
+            {
+                let app = app.clone();
+                move || {
+                    let _ = app.emit(
+                        "update_download_progress",
+                        UpdateProgressPayload {
+                            state: "installing".to_string(),
+                            downloaded: 0,
+                            total: None,
+                            bytes_per_second: 0.0,
+                            eta_seconds: None,
+                            message: "Файлы загружены. Устанавливаем обновление…".to_string(),
+                        },
+                    );
+                }
+            },
+        )
         .await
         .map_err(|e| e.to_string())?;
+
+    let _ = app.emit(
+        "update_download_progress",
+        UpdateProgressPayload {
+            state: "done".to_string(),
+            downloaded: 0,
+            total: None,
+            bytes_per_second: 0.0,
+            eta_seconds: None,
+            message: "Обновление установлено. Перезапуск приложения…".to_string(),
+        },
+    );
 
     app.restart();
 }
@@ -446,6 +474,10 @@ fn run_sidecar(app: AppHandle, args: Vec<String>) -> Result<(), String> {
         .spawn()
         .map_err(|e| format!("Failed to start optimizer: {}", e))?;
 
+    if let Some(state) = app.try_state::<AppState>() {
+        state.current_pid.store(child.id(), Ordering::SeqCst);
+    }
+
     let stdout = child.stdout.take().ok_or("No stdout")?;
     let stderr = child.stderr.take().ok_or("No stderr")?;
 
@@ -468,6 +500,9 @@ fn run_sidecar(app: AppHandle, args: Vec<String>) -> Result<(), String> {
     });
 
     let status = child.wait().map_err(|e| e.to_string())?;
+    if let Some(state) = app.try_state::<AppState>() {
+        state.current_pid.store(0, Ordering::SeqCst);
+    }
     let stderr_output = stderr_output
         .join()
         .map_err(|_| "Failed to join stderr reader".to_string())??;
@@ -709,16 +744,17 @@ fn emit_launch_requested(app: &AppHandle, args: Vec<String>) {
     let _ = app.emit("launch_requested", payload);
 }
 
+fn emit_close_requested(app: &AppHandle) {
+    let _ = app.emit("window_close_requested", ());
+}
+
 fn main() {
     tauri::Builder::default()
         .manage(AppState::default())
         .manage(UpdateState::default())
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
-            let is_quick = args.iter().any(|arg| arg == "--quick");
             emit_launch_requested(app, args);
-            if !is_quick {
-                let _ = show_main_window_impl(app);
-            }
+            let _ = show_main_window_impl(app);
         }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
@@ -727,13 +763,6 @@ fn main() {
             app.handle()
                 .plugin(tauri_plugin_updater::Builder::new().build())
                 .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })?;
-
-            setup_tray(app)?;
-
-            if is_quick_launch() {
-                let _ = hide_main_window_impl(app.handle());
-                let _ = set_tray_status_impl(app.handle(), "Быстрая оптимизация запущена");
-            }
 
             Ok(())
         })
@@ -753,13 +782,12 @@ fn main() {
             get_launch_path,
             get_runtime_debug,
             show_main_window,
-            hide_main_window,
-            set_tray_status,
+            stop_current_operation,
             quit_app,
             get_context_menu_settings,
             set_context_menu_settings,
             check_for_updates,
-            install_pending_update,
+            install_pending_update
         ])
         .on_window_event(|window, event| {
             if window.label() != "main" {
@@ -775,7 +803,7 @@ fn main() {
 
                 if !allow_exit {
                     api.prevent_close();
-                    let _ = window.hide();
+                    emit_close_requested(&app);
                 }
             }
         })

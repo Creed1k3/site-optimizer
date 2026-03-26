@@ -1,4 +1,4 @@
-# Site Optimizer v0.4.2
+# Site Optimizer v0.4.4
 
 Desktop app on Tauri 2 + React for optimizing website image assets from a ZIP archive or a folder.
 
@@ -8,14 +8,13 @@ The app can:
 - rewrite image references in code
 - review the result before export
 - export as a new ZIP or folder
-- run quick batch optimization in the tray
+- run quick batch optimization for multiple sites
 
 ## Features
 
 - Input modes: `ZIP archive` or `Folder`
 - Export modes: `ZIP archive` or `Folder`
 - Quick batch optimization for multiple sites
-- Tray mode for quick optimization
 - Context menu integration on Windows:
   - `Оптимизировать сайт`
   - `Быстро оптимизировать сайт`
@@ -24,6 +23,7 @@ The app can:
   - deduplicate identical images by content
 - RU / EN interface
 - Update prompt support through GitHub Releases + Tauri Updater
+- In-app update progress with status, speed, and ETA
 
 ## Image handling
 
@@ -52,19 +52,9 @@ Optimization rules:
 ### Quick mode
 
 1. Select multiple sites or use the Windows context menu quick action.
-2. The app moves to the tray.
-3. Sites are processed one by one automatically.
-4. Results are saved next to the originals.
-5. If quick mode was launched from the context menu, the app exits after finishing.
-
-## Windows Tray Behavior
-
-- Closing the main window sends the app to the tray.
-- Clicking the tray icon toggles window visibility.
-- Tray menu:
-  - show app
-  - hide to tray
-  - quit
+2. Sites are processed one by one automatically.
+3. Results are saved next to the originals.
+4. Quick launches can auto-close shortly after showing the result summary.
 
 ## Context Menu
 

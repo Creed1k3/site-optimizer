@@ -1,11 +1,11 @@
 {
-  "version": "0.4.1",
-  "notes": "Tray quick mode, single-instance launch behavior, context menu settings, updater foundation, and release polish.",
-  "pub_date": "2026-03-25T17:55:42.9039194+03:00",
+  "version": "0.4.4",
+  "notes": "Stability improvements, updater progress UI, close confirmation, batch pause/resume, and quick-flow fixes.",
+  "pub_date": "2026-03-26T07:33:41.546945+03:00",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTNFhsNG1vRTVvbVBPeDFPSGhENmxSMVJGWU5PYjJiUHFGcWxPemJVRUl5K1NtT0R4ZFpQazIvVEwrb2ZzMUlhNzUxa2tCeVpibGFtaTJYTFlQS1ZLcHVxbXliWktkUmdJPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzc0NDUwMzU3CWZpbGU6U2l0ZSBPcHRpbWl6ZXJfMC40LjFfeDY0LXNldHVwLmV4ZQpKazF1QTBzL041RDhURFQyeXFQNm1JeFZXN24vT3RhL1NWYm1kb2NmRGg4aHNyMnA3bTdUSlRTZ0dtVE54M3ZGUVpyekVPYnlMSHpFSDdrZ25paUdDdz09Cg==",
-      "url": "https://github.com/Creed1k3/site-optimizer/releases/download/v0.4.1/Site%20Optimizer_0.4.1_x64-setup.exe"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTNFhsNG1vRTVvbUZBNCtlNTdmMldDYXFyaFNSd1FEMC9xd3JpUWE5a0xPbXhGOTJCNmphcDBpWFlUalJFT0Q0VWxJMHFYR1pwQUNDUkM1Z21XeWNZWlNkQUpNdzg4VEEwPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzc0NDk5NDUzCWZpbGU6U2l0ZSBPcHRpbWl6ZXJfMC40LjRfeDY0LXNldHVwLmV4ZQozKzVPblVBVysrakhHSkFKOHlxbmlxY1F0S0NuUC9CWnRIYmdNQXY2WWMrK2g0N1NFWTdBc3dKQ3duSTlpdGNWNWM5TWp6cXJlZmlBaGFwTGVZYkhEQT09Cg==",
+      "url": "https://github.com/Creed1k3/site-optimizer/releases/download/v0.4.4/Site%20Optimizer_0.4.4_x64-setup.exe"
     }
   }
 }
