@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.2
+
+- added safe video optimization support for `mp4`, `ogv`, and `webm`
+- `mp4` and `webm` are optimized in-place only if the result is smaller
+- `ogv` is converted to `webm` only if the result is smaller
+- extended scan/report output to include supported video formats
+- added an interactive video step in the normal flow: if videos are found, the user can choose `keep / mp4 / webm / gif / delete` per file
+- if a site has no videos, optimization continues exactly as before without extra steps
+
 ## 0.5.0
 
 - version bump only

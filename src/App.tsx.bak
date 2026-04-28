@@ -48,10 +48,6 @@ interface BatchSummaryItem {
   success: boolean;
   savedBytes?: number;
   error?: string;
-  converted?: number;
-  deleted?: number;
-  replacedFiles?: number;
-  report?: ReportItem[];
 }
 
 interface LaunchPayload {
@@ -103,10 +99,10 @@ const translations = {
     exportingFolder: "Копирование результата…",
     scanFound: (label: string, codeCount: number) => `Найдено ${label} в ${codeCount} кодовых файлах`,
     classify: (toConvert: number, toDelete: number) => `${toConvert} на оптимизацию · ${toDelete} на удаление`,
-    zeroImages: "0 медиафайлов",
+    zeroImages: "0 изображений",
     phasePreparingZip: "Распаковка архива",
     phasePreparingFolder: "Копирование папки",
-    phaseRunning: "Оптимизация медиафайлов",
+    phaseRunning: "Оптимизация изображений",
     phaseExportZip: "Упаковка ZIP",
     phaseExportFolder: "Копирование результата",
     filesProgress: (done: number, total: number, percent: number) => `${done} / ${total} файлов · ${percent}%`,
@@ -158,10 +154,10 @@ const translations = {
     exportingFolder: "Copying output…",
     scanFound: (label: string, codeCount: number) => `Found ${label} across ${codeCount} code files`,
     classify: (toConvert: number, toDelete: number) => `${toConvert} to optimize · ${toDelete} to delete`,
-    zeroImages: "0 media files",
+    zeroImages: "0 images",
     phasePreparingZip: "Extracting archive",
     phasePreparingFolder: "Copying folder",
-    phaseRunning: "Optimizing media files",
+    phaseRunning: "Optimizing images",
     phaseExportZip: "Packing ZIP",
     phaseExportFolder: "Copying output",
     filesProgress: (done: number, total: number, percent: number) => `${done} / ${total} files · ${percent}%`,
@@ -221,135 +217,6 @@ function formatEta(seconds: number | null | undefined, locale: Locale): string {
   return locale === "ru" ? `примерно ${mins} мин ${secs} сек.` : `about ${mins}m ${secs}s`;
 }
 
-type ReportReasonTone = "good" | "warn" | "danger" | "neutral";
-
-interface ReportReasonInfo {
-  label: string;
-  tone: ReportReasonTone;
-}
-
-interface ReportBreakdown {
-  converted: number;
-  deleted: number;
-  unused: number;
-  duplicates: number;
-  manual: number;
-  skipped: number;
-  dynamic: number;
-  errors: number;
-}
-
-function getReportReasonInfo(item: ReportItem, locale: Locale): ReportReasonInfo {
-  const message = (item.message ?? "").toLowerCase();
-
-  if (item.type === "converted") {
-    return {
-      label: locale === "ru" ? "Оптимизировано" : "Optimized",
-      tone: "good"
-    };
-  }
-
-  if (item.type === "deleted") {
-    if (message.includes("существующим webp") || message.includes("existing webp")) {
-      return {
-        label: locale === "ru" ? "Готовый WEBP" : "Existing WEBP",
-        tone: "warn"
-      };
-    }
-
-    if (message.includes("не используется") || message.includes("unused")) {
-      return {
-        label: locale === "ru" ? "Не используется" : "Unused",
-        tone: "warn"
-      };
-    }
-
-    if (message.includes("дубликат") || message.includes("duplicate")) {
-      return {
-        label: locale === "ru" ? "Дубликат" : "Duplicate",
-        tone: "warn"
-      };
-    }
-
-    if (message.includes("пользовател") || message.includes("manual") || message.includes("user")) {
-      return {
-        label: locale === "ru" ? "Удалено вручную" : "Manual delete",
-        tone: "warn"
-      };
-    }
-
-    return {
-      label: locale === "ru" ? "Удалено" : "Deleted",
-      tone: "warn"
-    };
-  }
-
-  if (message.includes("динамичес") || message.includes("dynamic")) {
-    return {
-      label: locale === "ru" ? "Динамическая ссылка" : "Dynamic link",
-      tone: "danger"
-    };
-  }
-
-  if (message.includes("пропущено") || message.includes("skipped")) {
-    return {
-      label: locale === "ru" ? "Пропущено" : "Skipped",
-      tone: "warn"
-    };
-  }
-
-  return {
-    label: locale === "ru" ? "Ошибка" : "Error",
-    tone: "danger"
-  };
-}
-
-function getReportBreakdown(report: ReportItem[]): ReportBreakdown {
-  return report.reduce<ReportBreakdown>((summary, item) => {
-    const message = (item.message ?? "").toLowerCase();
-
-    if (item.type === "converted") {
-      summary.converted += 1;
-      return summary;
-    }
-
-    if (item.type === "deleted") {
-      summary.deleted += 1;
-      if (message.includes("существующим webp") || message.includes("existing webp")) {
-        summary.duplicates += 1;
-      } else if (message.includes("не используется") || message.includes("unused")) {
-        summary.unused += 1;
-      } else if (message.includes("дубликат") || message.includes("duplicate")) {
-        summary.duplicates += 1;
-      } else if (message.includes("пользовател") || message.includes("manual") || message.includes("user")) {
-        summary.manual += 1;
-      }
-      return summary;
-    }
-
-    if (message.includes("динамичес") || message.includes("dynamic")) {
-      summary.dynamic += 1;
-    }
-
-    if (message.includes("пропущено") || message.includes("skipped")) {
-      summary.skipped += 1;
-    } else {
-      summary.errors += 1;
-    }
-
-    return summary;
-  }, {
-    converted: 0,
-    deleted: 0,
-    unused: 0,
-    duplicates: 0,
-    manual: 0,
-    skipped: 0,
-    dynamic: 0,
-    errors: 0
-  });
-}
-
 function ZipIcon() {
   return (
     <span className="segmented-icon" aria-hidden="true">
@@ -403,7 +270,6 @@ export default function App() {
   });
   const [runtimeDebug, setRuntimeDebug] = useState<string[]>([]);
   const [batchResults, setBatchResults] = useState<BatchSummaryItem[]>([]);
-  const [activeBatchIndex, setActiveBatchIndex] = useState(0);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [contextMenuNormal, setContextMenuNormal] = useState(false);
   const [contextMenuQuick, setContextMenuQuick] = useState(false);
@@ -743,11 +609,11 @@ export default function App() {
     ? (locale === "ru" ? translations.ru.languageNative : translations.en.languageNative)
     : (locale === "ru" ? t.languageEnglish : translations.en.languageEnglish);
   const extraCleanupTitle = locale === "ru" ? "Дополнительная очистка" : "Extra Cleanup";
-  const removeUnusedLabel = locale === "ru" ? "Удалять неиспользуемые медиафайлы" : "Remove unused media files";
+  const removeUnusedLabel = locale === "ru" ? "Удалять неиспользуемые картинки" : "Remove unused images";
   const removeUnusedHint = locale === "ru"
-    ? "Осторожный режим: удаляются только файлы, для которых не найдено надежных ссылок в коде."
+    ? "Опция осторожная: может затронуть нестандартные шаблоны и lazy-load."
     : "Use carefully: custom templates and lazy-load setups may need review.";
-  const dedupeLabel = locale === "ru" ? "Удалять дубликаты медиафайлов" : "Remove duplicate media files";
+  const dedupeLabel = locale === "ru" ? "Удалять дубликаты изображений" : "Remove duplicate images";
   const dedupeHint = locale === "ru"
     ? "Дубликаты ищутся по содержимому файла и объединяются в один оригинал."
     : "Duplicates are detected by file content and merged into a single original.";
@@ -886,7 +752,6 @@ export default function App() {
     setBatchPaused(false);
     setClosePromptOpen(false);
     setBatchResults([]);
-    setActiveBatchIndex(0);
     setResult(null);
     setWorkDir(null);
     setOutputPath(null);
@@ -1085,7 +950,6 @@ export default function App() {
     autoCloseDelayRef.current = autoCloseAfterFinish ? 3 : 10;
     setPhase("batching");
     setBatchResults([]);
-    setActiveBatchIndex(0);
     setResult(null);
     setOutputPath(null);
     setErrorMsg("");
@@ -1129,11 +993,7 @@ export default function App() {
           input: currentPath,
           output: out,
           success: true,
-          savedBytes: donePayload.savedBytes,
-          converted: donePayload.converted,
-          deleted: donePayload.deleted,
-          replacedFiles: donePayload.replacedFiles,
-          report: donePayload.report
+          savedBytes: donePayload.savedBytes
         });
       } catch (error: any) {
         if (stopRequestedRef.current) {
@@ -1148,7 +1008,6 @@ export default function App() {
     }
 
     setBatchResults(nextResults);
-    setActiveBatchIndex(0);
     setProgress({
       done: nextResults.filter((item) => item.success).length,
       total: nextResults.length,
@@ -1173,7 +1032,6 @@ export default function App() {
     setOutputPath(null);
     setResult(null);
     setBatchResults([]);
-    setActiveBatchIndex(0);
     setErrorMsg("");
     setFloatingFiles([]);
     setCurrentFile("");
@@ -1212,87 +1070,6 @@ export default function App() {
   const batchSuccessCount = batchResults.filter((item) => item.success).length;
   const batchErrorCount = batchResults.length - batchSuccessCount;
   const batchSavedBytes = batchResults.reduce((sum, item) => sum + (item.savedBytes ?? 0), 0);
-  const activeBatchItem = batchResults[activeBatchIndex] ?? null;
-  const activeBatchReport = activeBatchItem?.report?.filter((item) => activeTab === "errors" ? item.type === "error" : item.type === activeTab) ?? [];
-  const reviewBreakdown = getReportBreakdown(result?.report ?? []);
-  const activeBatchBreakdown = getReportBreakdown(activeBatchItem?.report ?? []);
-
-  const renderDetailedSummary = (summary: ReportBreakdown) => {
-    const items = [
-      {
-        value: summary.converted,
-        label: locale === "ru" ? "оптимизировано" : "optimized",
-        tone: "good"
-      },
-      {
-        value: summary.unused,
-        label: locale === "ru" ? "не используется" : "unused",
-        tone: "warn"
-      },
-      {
-        value: summary.duplicates,
-        label: locale === "ru" ? "дубликаты" : "duplicates",
-        tone: "warn"
-      },
-      {
-        value: summary.skipped + summary.dynamic,
-        label: locale === "ru" ? "пропущено" : "skipped",
-        tone: "neutral"
-      },
-      {
-        value: summary.errors,
-        label: locale === "ru" ? "ошибки" : "errors",
-        tone: "danger"
-      }
-    ] as const;
-
-    return (
-      <div className="report-summary-grid">
-        {items.map((item) => (
-          <div key={item.label} className={`report-summary-item report-summary-item--${item.tone}`}>
-            <span className="report-summary-value">{item.value}</span>
-            <span className="report-summary-label">{item.label}</span>
-          </div>
-        ))}
-      </div>
-    );
-  };
-
-  const renderReportItem = (item: ReportItem, key: string) => {
-    const reason = getReportReasonInfo(item, locale);
-
-    return (
-      <div key={key} className={`report-item report-item--${item.type}`}>
-        <div className="report-copy">
-          <span className="report-file">{item.file}</span>
-          <div className="report-detail-line">
-            <span className={`report-reason report-reason--${reason.tone}`}>{reason.label}</span>
-            {item.srcFormat && <span className="report-fmt">{item.srcFormat}</span>}
-            {item.message && item.type !== "converted" && (
-              <span className="report-detail-text">{item.message}</span>
-            )}
-          </div>
-        </div>
-
-        {item.type === "converted" && (
-          <span className="report-meta">
-            {formatBytes(item.originalSize ?? 0)} {"->"} {formatBytes(item.newSize ?? 0)}
-            {typeof item.savedPercent === "number" && (
-              <span className="report-badge">
-                -{item.savedPercent}%{typeof item.saved === "number" ? ` · ${formatBytes(item.saved)}` : ""}
-              </span>
-            )}
-          </span>
-        )}
-
-        {item.type === "deleted" && (
-          <span className="report-meta">
-            {formatBytes(item.originalSize ?? 0)}
-          </span>
-        )}
-      </div>
-    );
-  };
 
   return (
     <div className="app">
@@ -1341,7 +1118,7 @@ export default function App() {
           <button className="settings-btn" type="button" onClick={() => setIsSettingsOpen(true)} aria-label={settingsTitle}>
             <span className="settings-btn-icon">⚙</span>
           </button>
-          <span className="header-version">v0.5.2</span>
+          <span className="header-version">v0.5.0</span>
         </div>
       </header>
 
@@ -1553,13 +1330,26 @@ export default function App() {
                 })}
               </div>
 
-              <div className="report-detail-header">
-                <span className="report-detail-title">{locale === "ru" ? "Итог по сайту" : "Site summary"}</span>
-                {renderDetailedSummary(reviewBreakdown)}
-              </div>
-
               <div className="report-list">
-                {filteredReport.map((item, index) => renderReportItem(item, `review-${index}`))}
+                {filteredReport.map((item, index) => (
+                  <div key={index} className={`report-item report-item--${item.type}`}>
+                    <span className="report-file">{item.file}</span>
+                    {item.type === "converted" && (
+                      <span className="report-meta">
+                        {item.srcFormat && <span className="report-fmt">{item.srcFormat}</span>}
+                        {formatBytes(item.originalSize!)} → {formatBytes(item.newSize!)}
+                        <span className="report-badge">-{item.savedPercent}%</span>
+                      </span>
+                    )}
+                    {item.type === "deleted" && (
+                      <span className="report-meta">
+                        {item.srcFormat && <span className="report-fmt">{item.srcFormat}</span>}
+                        {t.freed(formatBytes(item.originalSize ?? 0))}
+                      </span>
+                    )}
+                    {item.type === "error" && <span className="report-error">{item.message}</span>}
+                  </div>
+                ))}
 
                 {filteredReport.length === 0 && <div className="report-empty">{t.emptyTab}</div>}
               </div>
@@ -1626,82 +1416,18 @@ export default function App() {
             </div>
             <div className="report report--full batch-report">
               <div className="report-list">
-                {batchResults.map((item, index) => (
-                  <button
-                    type="button"
-                    key={`${item.input}-${index}`}
-                    className={`report-item report-item--button ${item.success ? "" : "report-item--error"} ${activeBatchIndex === index ? "report-item--active" : ""}`}
-                    onClick={() => setActiveBatchIndex(index)}
-                  >
+                {batchResults.map((item) => (
+                  <div key={item.input} className={`report-item ${item.success ? "" : "report-item--error"}`}>
                     <span className="report-file">{item.input}</span>
                     <span className="report-meta">
                       {item.success
-                        ? `${formatBytes(item.savedBytes ?? 0)} saved · ${item.converted ?? 0} converted · ${item.deleted ?? 0} deleted`
+                        ? `${formatBytes(item.savedBytes ?? 0)} saved`
                         : (item.error ?? "Error")}
                     </span>
-                  </button>
+                  </div>
                 ))}
               </div>
             </div>
-            {activeBatchItem && (
-              <div className="report report--full batch-report-detail">
-                <div className="report-tabs">
-                  {(["converted", "deleted", "errors"] as const).map((tab) => {
-                    const count = tab === "errors"
-                      ? (activeBatchItem.report?.filter((item) => item.type === "error").length ?? 0)
-                      : (activeBatchItem.report?.filter((item) => item.type === tab).length ?? 0);
-                    return (
-                      <button key={tab} className={`report-tab ${activeTab === tab ? "report-tab--active" : ""}`} onClick={() => setActiveTab(tab)}>
-                        {getTabLabel(tab)} <span className="tab-count">{count}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-
-                <div className="result-summary batch-summary batch-summary--detail">
-                  <div className="result-hero">
-                    <span className="result-hero-label">{t.saved}</span>
-                    <span className="result-hero-value">{formatBytes(activeBatchItem.savedBytes ?? 0)}</span>
-                  </div>
-                  <div className="result-stats">
-                    <div className="stat">
-                      <span className="stat-value stat-value--teal">{activeBatchItem.converted ?? 0}</span>
-                      <span className="stat-label">{t.compressed}</span>
-                    </div>
-                    <div className="stat-divider" />
-                    <div className="stat">
-                      <span className="stat-value stat-value--red">{activeBatchItem.deleted ?? 0}</span>
-                      <span className="stat-label">{t.deleted}</span>
-                    </div>
-                    <div className="stat-divider" />
-                    <div className="stat">
-                      <span className="stat-value">{activeBatchItem.replacedFiles ?? 0}</span>
-                      <span className="stat-label">{t.filesUpdated}</span>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="report-detail-header">
-                  <span className="report-detail-title">{locale === "ru" ? "Итог по сайту" : "Site summary"}</span>
-                  {renderDetailedSummary(activeBatchBreakdown)}
-                </div>
-
-                <div className="review-callout review-callout--compact">
-                  <div className="review-callout-body">
-                    <p className="review-callout-title">{activeBatchItem.input}</p>
-                    {activeBatchItem.output && <p className="review-callout-path">{activeBatchItem.output}</p>}
-                    {!activeBatchItem.success && activeBatchItem.error && (
-                      <p className="review-callout-hint">{activeBatchItem.error}</p>
-                    )}
-                  </div>
-                </div>
-
-                <div className="report-list">
-                  {activeBatchReport.map((item, index) => renderReportItem(item, `${activeBatchItem.input}-${activeTab}-${index}`))}
-                  {activeBatchReport.length === 0 && <div className="report-empty">{t.emptyTab}</div>}
-                </div>
-              </div>
-            )}
             {autoCloseSeconds !== null && <p className="done-hint done-hint--countdown">{autoCloseHint}</p>}
             <button className="btn-primary" onClick={() => void reset()}>{t.optimizeAnother}</button>
           </div>
