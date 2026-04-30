@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.0
+
+- upgraded report UI with smoother chart reveal animations
+- reworked center analytics card to focus on error reasons and recent issue files
+- improved donut and right-side chart appearance transitions from center
+- removed distracting continuous text motion for a calmer final report view
+
 ## 0.5.2
 
 - added safe video optimization support for `mp4`, `ogv`, and `webm`

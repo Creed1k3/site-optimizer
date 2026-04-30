@@ -18,6 +18,7 @@ struct AppState {
     allow_exit: AtomicBool,
     current_pid: AtomicU32,
     is_busy: AtomicBool,
+    report_expanded_for_report: AtomicBool,
 }
 
 #[derive(Default)]
@@ -157,6 +158,51 @@ fn hide_main_window_impl(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+fn maximize_main_window_impl(app: &AppHandle) -> Result<(), String> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "Main window not found".to_string())?;
+
+    let was_maximized = window.is_maximized().map_err(|e| e.to_string())?;
+    if let Some(state) = app.try_state::<AppState>() {
+        state
+            .report_expanded_for_report
+            .store(!was_maximized, Ordering::SeqCst);
+    }
+
+    window.show().map_err(|e| e.to_string())?;
+    window.unminimize().map_err(|e| e.to_string())?;
+    if !was_maximized {
+        window.maximize().map_err(|e| e.to_string())?;
+    }
+    window.set_focus().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn restore_main_window_impl(app: &AppHandle) -> Result<(), String> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "Main window not found".to_string())?;
+
+    let should_restore = app
+        .try_state::<AppState>()
+        .map(|state| {
+            state
+                .report_expanded_for_report
+                .swap(false, Ordering::SeqCst)
+        })
+        .unwrap_or(false);
+
+    if should_restore {
+        window.unmaximize().map_err(|e| e.to_string())?;
+    }
+
+    window.show().map_err(|e| e.to_string())?;
+    window.unminimize().map_err(|e| e.to_string())?;
+    window.set_focus().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 fn registry_shell_root(root: &str) -> Result<RegKey, String> {
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
     hkcu.create_subkey(root)
@@ -289,6 +335,16 @@ fn show_main_window(app: AppHandle) -> Result<(), String> {
 #[tauri::command]
 fn hide_main_window(app: AppHandle) -> Result<(), String> {
     hide_main_window_impl(&app)
+}
+
+#[tauri::command]
+fn maximize_main_window(app: AppHandle) -> Result<(), String> {
+    maximize_main_window_impl(&app)
+}
+
+#[tauri::command]
+fn restore_main_window(app: AppHandle) -> Result<(), String> {
+    restore_main_window_impl(&app)
 }
 
 #[tauri::command]
@@ -884,6 +940,8 @@ fn main() {
             get_runtime_debug,
             show_main_window,
             hide_main_window,
+            maximize_main_window,
+            restore_main_window,
             set_activity_state,
             stop_current_operation,
             quit_app,

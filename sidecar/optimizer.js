@@ -81,14 +81,14 @@ function defaultVideoAction(filePath) {
     return "keep";
 }
 
-function parseVideoActionOverrides() {
-    const index = extraArgs.indexOf("--video-actions-json");
-    if (index === -1 || !extraArgs[index + 1]) {
+function parseVideoActionOverrides(optionArgs = []) {
+    const index = optionArgs.indexOf("--video-actions-json");
+    if (index === -1 || !optionArgs[index + 1]) {
         return new Map();
     }
 
     try {
-        const parsed = JSON.parse(extraArgs[index + 1]);
+        const parsed = JSON.parse(optionArgs[index + 1]);
         if (!Array.isArray(parsed)) {
             return new Map();
         }
@@ -189,6 +189,80 @@ function stripResponsiveAttrs(content) {
         .replace(/\s+srcset\s*=\s*(".*?"|'.*?'|[^\s>]+)/gi, "")
         .replace(/\s+imagesrcset\s*=\s*(".*?"|'.*?'|[^\s>]+)/gi, "")
         .replace(/\s+sizes\s*=\s*(".*?"|'.*?'|[^\s>]+)/gi, "");
+}
+
+function buildAssetCandidates(assetPath, codeFile, workDir) {
+    const rootRelative = relativePath(workDir, assetPath);
+    const fileRelative = relative(dirname(codeFile), assetPath).replace(/\\/g, "/");
+    const candidates = new Set();
+
+    for (const raw of [rootRelative, fileRelative]) {
+        if (!raw) continue;
+        const normalized = raw.replace(/\\/g, "/");
+        candidates.add(normalized);
+        candidates.add(normalized.replace(/^\.\//, ""));
+        candidates.add(normalized.startsWith("./") || normalized.startsWith("../") ? normalized : `./${normalized}`);
+        candidates.add(`/${normalized.replace(/^\.\//, "")}`);
+    }
+
+    return [...candidates]
+        .map(value => value.toLowerCase())
+        .filter(Boolean);
+}
+
+function contentMentionsCandidate(content, candidate) {
+    return content.includes(candidate);
+}
+
+function collectUsedAssetsByScan(assetFiles, codeEntries, workDir) {
+    const usedAssets = new Set();
+
+    for (const assetPath of assetFiles) {
+        const normalizedAsset = normalizeRef(relativePath(workDir, assetPath));
+        let found = false;
+
+        for (const entry of codeEntries) {
+            const candidates = buildAssetCandidates(assetPath, entry.filePath, workDir);
+            if (candidates.some(candidate => contentMentionsCandidate(entry.content, candidate))) {
+                usedAssets.add(normalizedAsset);
+                found = true;
+                break;
+            }
+        }
+
+        if (!found) {
+            continue;
+        }
+    }
+
+    return usedAssets;
+}
+
+function collectExactReferencedAssets(codeEntries, workDir) {
+    const exactRefs = new Set();
+    const unresolvedNames = new Set();
+
+    for (const entry of codeEntries) {
+        const collected = collectReferencedAssets(entry.content, entry.filePath, workDir);
+        for (const ref of collected.exactRefs) {
+            exactRefs.add(ref);
+        }
+        for (const name of collected.unresolvedNames) {
+            unresolvedNames.add(name);
+        }
+    }
+
+    return { exactRefs, unresolvedNames };
+}
+
+function assetKindFromPath(filePath) {
+    const ext = extname(filePath).toLowerCase();
+    if (IMAGE_EXTS.has(ext) || ext === ".webp") return "image";
+    if (VIDEO_EXTS.has(ext)) return "video";
+    if (FONT_EXTS.has(ext)) return "font";
+    if (SCRIPT_ASSET_EXTS.has(ext)) return "script";
+    if (STYLE_ASSET_EXTS.has(ext)) return "style";
+    return "other";
 }
 
 function replaceImageRefs(content, codeFile, workDir, exactRewrites, onSkip) {
@@ -317,6 +391,31 @@ function runFfmpeg(args) {
     });
 }
 
+const GIF_WEBP_PRESETS = [
+    { quality: 82, effort: 4 },
+    { quality: 72, effort: 4 },
+    { quality: 64, effort: 5 },
+    { quality: 56, effort: 6 }
+];
+
+async function buildBestGifWebp(inputBuffer) {
+    const variants = await Promise.all(
+        GIF_WEBP_PRESETS.map(async preset => {
+            const buffer = await sharp(inputBuffer, { animated: true })
+                .webp(preset)
+                .toBuffer();
+
+            return {
+                buffer,
+                size: buffer.byteLength,
+                preset
+            };
+        })
+    );
+
+    return variants.reduce((best, current) => current.size < best.size ? current : best);
+}
+
 async function optimizeVideo(filePath, targetExt) {
     const extension = extname(filePath).toLowerCase();
     const tempPath = filePath.replace(new RegExp(`${extension.replace(".", "\\.")}$`, "i"), `.optimized.${targetExt}`);
@@ -345,11 +444,11 @@ function relativePath(workDir, filePath) {
     return relative(workDir, filePath).replace(/\\/g, "/");
 }
 
-function isReferencedAsset(filePath, workDir, exactRefs, unresolvedNames) {
+function isReferencedAsset(filePath, workDir, exactRefs, unresolvedNames, allowUnresolvedNames = true) {
     const rel = relativePath(workDir, filePath);
     const normalizedRel = normalizeRef(rel);
     const normalizedName = basename(normalizedRel);
-    return exactRefs.has(normalizedRel) || unresolvedNames.has(normalizedName);
+    return exactRefs.has(normalizedRel) || (allowUnresolvedNames && unresolvedNames.has(normalizedName));
 }
 
 function planConvertedTarget(filePath, targetExt, workDir, existingTargets, reservedTargets) {
@@ -386,10 +485,10 @@ async function cmdUnzip(zipPath, workDir) {
     emit({ type: "unzip_done", workDir, fileCount: allFiles.length, imgCount });
 }
 
-async function cmdOptimize(workDir) {
-    const removeUnused = extraArgs.includes("--remove-unused");
-    const dedupeImages = extraArgs.includes("--dedupe-images");
-    const videoActionOverrides = parseVideoActionOverrides();
+async function cmdOptimize(workDir, optionArgs = []) {
+    const removeUnused = optionArgs.includes("--remove-unused");
+    const dedupeImages = optionArgs.includes("--dedupe-images");
+    const videoActionOverrides = parseVideoActionOverrides(optionArgs);
 
     emit({ type: "status", message: "Scanning files..." });
 
@@ -415,28 +514,35 @@ async function cmdOptimize(workDir) {
         codeCount: codeFiles.length
     });
 
+    const initialCodeEntries = [];
+    for (const codeFile of codeFiles) {
+        const content = await readFile(codeFile, "utf8").catch(() => null);
+        if (!content) continue;
+        initialCodeEntries.push({
+            filePath: codeFile,
+            content: content.toLowerCase()
+        });
+    }
+
     if (allConvertibleFiles.length === 0 && !removeUnused) {
         emit({ type: "done", converted: 0, deleted: 0, replacedFiles: 0, savedBytes: 0, report: [] });
         return;
     }
 
     emit({ type: "status", message: "Analysing code references..." });
-    const initialReferencedAssets = new Set();
-    const unresolvedReferencedNames = new Set();
-
-    for (const codeFile of codeFiles) {
-        const content = await readFile(codeFile, "utf8").catch(() => null);
-        if (!content) continue;
-        const { exactRefs, unresolvedNames } = collectReferencedAssets(content, codeFile, workDir);
-        for (const ref of exactRefs) initialReferencedAssets.add(ref);
-        for (const name of unresolvedNames) unresolvedReferencedNames.add(name);
-    }
+    const initialExactReferenced = collectExactReferencedAssets(initialCodeEntries, workDir);
+    const initialReferencedAssets = removeUnused
+        ? new Set([
+            ...collectUsedAssetsByScan(removableAssetFiles, initialCodeEntries, workDir),
+            ...initialExactReferenced.exactRefs
+        ])
+        : initialExactReferenced.exactRefs;
 
     const usedConvertibleFiles = removeUnused
-        ? convertibleFiles.filter(filePath => isReferencedAsset(filePath, workDir, initialReferencedAssets, unresolvedReferencedNames))
+        ? convertibleFiles.filter(filePath => initialReferencedAssets.has(normalizeRef(relativePath(workDir, filePath))))
         : convertibleFiles;
     const usedVideoFiles = removeUnused
-        ? videoFiles.filter(filePath => isReferencedAsset(filePath, workDir, initialReferencedAssets, unresolvedReferencedNames))
+        ? videoFiles.filter(filePath => initialReferencedAssets.has(normalizeRef(relativePath(workDir, filePath))))
         : videoFiles;
 
     const imagePlans = usedConvertibleFiles.map(filePath => ({
@@ -582,8 +688,16 @@ async function cmdOptimize(workDir) {
 
             const out = plannedTargets.get(mediaPath) ?? toWebpPath(mediaPath);
             const inputBuffer = await readFile(mediaPath);
-            await sharp(inputBuffer, { animated: isGif(mediaPath) }).webp({ quality: 82, effort: 4 }).toFile(out);
-            const newSize = (await stat(out)).size;
+            let newSize;
+
+            if (isGif(mediaPath)) {
+                const bestGifVariant = await buildBestGifWebp(inputBuffer);
+                await writeFile(out, bestGifVariant.buffer);
+                newSize = bestGifVariant.size;
+            } else {
+                await sharp(inputBuffer).webp({ quality: 82, effort: 4 }).toFile(out);
+                newSize = (await stat(out)).size;
+            }
 
             if (newSize >= originalSize) {
                 await safeUnlink(out);
@@ -669,8 +783,7 @@ async function cmdOptimize(workDir) {
 
     emit({ type: "status", message: "Updating code references..." });
     let replacedFiles = 0;
-    const finalReferencedAssets = new Set();
-    const finalUnresolvedAssetNames = new Set();
+    const finalCodeEntries = [];
     for (const codeFile of codeFiles) {
         const content = await readFile(codeFile, "utf8").catch(() => null);
         if (!content) continue;
@@ -680,16 +793,18 @@ async function cmdOptimize(workDir) {
             skippedRefs.set(`${reason}: ${rawPath}`, { rawPath, reason });
         });
         updated = stripResponsiveAttrs(updated);
-        const { exactRefs, unresolvedNames } = collectReferencedAssets(updated, codeFile, workDir, (rawPath, reason) => {
+        collectReferencedAssets(updated, codeFile, workDir, (rawPath, reason) => {
             if (!rawPath) return;
             skippedRefs.set(`${reason}: ${rawPath}`, { rawPath, reason });
         });
-        for (const ref of exactRefs) finalReferencedAssets.add(ref);
-        for (const name of unresolvedNames) finalUnresolvedAssetNames.add(name);
         if (updated !== content) {
             await writeFile(codeFile, updated, "utf8");
             replacedFiles++;
         }
+        finalCodeEntries.push({
+            filePath: codeFile,
+            content: updated.toLowerCase()
+        });
         if (skippedRefs.size > 0) {
             const relCodeFile = relative(workDir, codeFile).replace(/\\/g, "/");
             for (const { rawPath, reason } of skippedRefs.values()) {
@@ -706,9 +821,14 @@ async function cmdOptimize(workDir) {
         emit({ type: "status", message: "Removing unused assets..." });
         const currentFiles = await walkDir(workDir);
         const currentAssets = currentFiles.filter(filePath => REMOVABLE_ASSET_EXTS.has(extname(filePath).toLowerCase()));
+        const finalExactReferenced = collectExactReferencedAssets(finalCodeEntries, workDir);
+        const finalReferencedAssets = new Set([
+            ...collectUsedAssetsByScan(currentAssets, finalCodeEntries, workDir),
+            ...finalExactReferenced.exactRefs
+        ]);
 
         for (const assetPath of currentAssets) {
-            if (isReferencedAsset(assetPath, workDir, finalReferencedAssets, finalUnresolvedAssetNames)) {
+            if (finalReferencedAssets.has(normalizeRef(relativePath(workDir, assetPath)))) {
                 continue;
             }
 
@@ -726,9 +846,32 @@ async function cmdOptimize(workDir) {
         }
     }
 
+    const currentFiles = await walkDir(workDir);
+    const currentAssetKeys = new Set(
+        currentFiles
+            .filter(filePath => REMOVABLE_ASSET_EXTS.has(extname(filePath).toLowerCase()))
+            .map(filePath => normalizeRef(relativePath(workDir, filePath)))
+    );
+    const finalExactReferenced = collectExactReferencedAssets(finalCodeEntries, workDir);
+    const finalScannedReferencedAssets = collectUsedAssetsByScan(
+        currentFiles.filter(filePath => REMOVABLE_ASSET_EXTS.has(extname(filePath).toLowerCase())),
+        finalCodeEntries,
+        workDir
+    );
+    const referencedAssets = [...new Set([
+        ...finalExactReferenced.exactRefs,
+        ...finalScannedReferencedAssets
+    ])]
+        .sort((a, b) => a.localeCompare(b))
+        .map(ref => ({
+            file: ref,
+            kind: assetKindFromPath(ref),
+            exists: currentAssetKeys.has(normalizeRef(ref))
+        }));
+
     const deletedCount = report.filter(item => item.type === "deleted").length;
     const convertedCount = report.filter(item => item.type === "converted").length;
-    emit({ type: "done", converted: convertedCount, deleted: deletedCount, replacedFiles, savedBytes, report });
+    emit({ type: "done", converted: convertedCount, deleted: deletedCount, replacedFiles, savedBytes, report, referencedAssets });
 }
 
 async function cmdRezip(workDir, outputZipPath) {
@@ -761,7 +904,7 @@ async function cmdCopyOut(workDir, outputDir) {
 (async() => {
     try {
         if (command === "unzip") await cmdUnzip(arg1, arg2);
-        else if (command === "optimize") await cmdOptimize(arg1);
+        else if (command === "optimize") await cmdOptimize(arg1, [arg2, ...extraArgs].filter(Boolean));
         else if (command === "rezip") await cmdRezip(arg1, arg2);
         else if (command === "copyout") await cmdCopyOut(arg1, arg2);
         else {

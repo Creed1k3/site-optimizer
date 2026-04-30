@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+﻿import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import "./App.css";
@@ -6,7 +6,7 @@ import "./App.css";
 type InputMode = "zip" | "folder";
 type ExportMode = "zip" | "folder";
 type Phase = "idle" | "preparing" | "running" | "reviewing" | "exporting" | "done" | "error" | "batching" | "batchDone";
-type ReportTab = "converted" | "deleted" | "errors";
+type ReportTab = "assets" | "converted" | "deleted" | "errors";
 type Locale = "ru" | "en";
 
 interface ReportItem {
@@ -20,12 +20,19 @@ interface ReportItem {
   message?: string;
 }
 
+interface ReferencedAsset {
+  file: string;
+  kind: "image" | "video" | "font" | "script" | "style" | "other";
+  exists: boolean;
+}
+
 interface DonePayload {
   converted: number;
   deleted: number;
   replacedFiles: number;
   savedBytes: number;
   report: ReportItem[];
+  referencedAssets?: ReferencedAsset[];
 }
 
 interface ProgressState {
@@ -52,6 +59,7 @@ interface BatchSummaryItem {
   deleted?: number;
   replacedFiles?: number;
   report?: ReportItem[];
+  referencedAssets?: ReferencedAsset[];
 }
 
 interface LaunchPayload {
@@ -82,59 +90,59 @@ interface UpdateDownloadProgress {
 
 const translations = {
   ru: {
-    languageLabel: "Язык",
-    languageNative: "Русский",
+    languageLabel: "\u042f\u0437\u044b\u043a",
+    languageNative: "\u0420\u0443\u0441\u0441\u043a\u0438\u0439",
     languageEnglish: "English",
-    steps: ["Вход", "Оптимизация", "Проверка", "Экспорт"],
-    inputZip: "ZIP-архив",
-    inputFolder: "Папка",
-    dropZip: "Перетащи сюда ZIP сайта",
-    dropFolder: "Перетащи сюда папку сайта",
-    browseZip: "или нажми для выбора · только .zip",
-    browseFolder: "или нажми для выбора",
-    changeFile: "Изменить файл",
-    changeFolder: "Изменить папку",
-    runZip: "Распаковать и оптимизировать",
-    runFolder: "Оптимизировать папку",
-    preparingZip: "Распаковка ZIP…",
-    preparingFolder: "Копирование папки…",
-    optimizerStarting: "Запуск оптимизации…",
-    exportingZip: "Упаковка ZIP…",
-    exportingFolder: "Копирование результата…",
-    scanFound: (label: string, codeCount: number) => `Найдено ${label} в ${codeCount} кодовых файлах`,
-    classify: (toConvert: number, toDelete: number) => `${toConvert} на оптимизацию · ${toDelete} на удаление`,
-    zeroImages: "0 медиафайлов",
-    phasePreparingZip: "Распаковка архива",
-    phasePreparingFolder: "Копирование папки",
-    phaseRunning: "Оптимизация медиафайлов",
-    phaseExportZip: "Упаковка ZIP",
-    phaseExportFolder: "Копирование результата",
-    filesProgress: (done: number, total: number, percent: number) => `${done} / ${total} файлов · ${percent}%`,
-    queued: "в очереди",
-    processed: "обработано",
-    left: "осталось",
-    saved: "Экономия",
-    compressed: "сжато",
-    deleted: "удалено",
-    filesUpdated: "файлов обновлено",
-    reviewTitle: "Готово к проверке",
-    reviewHint: "Открой папку выше, проверь результат и потом выбери формат экспорта.",
-    tabConverted: "Оптимизировано",
-    tabDeleted: "Удалено",
-    tabErrors: "Ошибки",
-    freed: (value: string) => `освобождено ${value}`,
-    emptyTab: "Здесь пока ничего нет",
-    exportFormat: "Формат экспорта",
-    outputZip: (path: string) => `Выходной файл: ${path}`,
-    outputFolder: (path: string) => `Выходная папка: ${path}`,
-    exportZip: "Упаковать и экспортировать ZIP",
-    exportFolder: "Экспортировать папку",
-    cancel: "Отмена",
-    exportDone: "Экспорт завершен",
-    exportDoneZip: "Оптимизированный ZIP сохранен рядом с исходным файлом.",
-    exportDoneFolder: "Оптимизированная папка сохранена рядом с исходной.",
-    optimizeAnother: "Оптимизировать другой сайт",
-    tryAgain: "Попробовать снова"
+    steps: ["\u0412\u0445\u043e\u0434", "\u041e\u043f\u0442\u0438\u043c\u0438\u0437\u0430\u0446\u0438\u044f", "\u041f\u0440\u043e\u0432\u0435\u0440\u043a\u0430", "\u042d\u043a\u0441\u043f\u043e\u0440\u0442"],
+    inputZip: "ZIP-\u0430\u0440\u0445\u0438\u0432",
+    inputFolder: "\u041f\u0430\u043f\u043a\u0430",
+    dropZip: "\u041f\u0435\u0440\u0435\u0442\u0430\u0449\u0438 \u0441\u044e\u0434\u0430 ZIP \u0441\u0430\u0439\u0442\u0430",
+    dropFolder: "\u041f\u0435\u0440\u0435\u0442\u0430\u0449\u0438 \u0441\u044e\u0434\u0430 \u043f\u0430\u043f\u043a\u0443 \u0441\u0430\u0439\u0442\u0430",
+    browseZip: "\u0438\u043b\u0438 \u043d\u0430\u0436\u043c\u0438 \u0434\u043b\u044f \u0432\u044b\u0431\u043e\u0440\u0430 \u00b7 \u0442\u043e\u043b\u044c\u043a\u043e .zip",
+    browseFolder: "\u0438\u043b\u0438 \u043d\u0430\u0436\u043c\u0438 \u0434\u043b\u044f \u0432\u044b\u0431\u043e\u0440\u0430",
+    changeFile: "\u0418\u0437\u043c\u0435\u043d\u0438\u0442\u044c \u0444\u0430\u0439\u043b",
+    changeFolder: "\u0418\u0437\u043c\u0435\u043d\u0438\u0442\u044c \u043f\u0430\u043f\u043a\u0443",
+    runZip: "\u0420\u0430\u0441\u043f\u0430\u043a\u043e\u0432\u0430\u0442\u044c \u0438 \u043e\u043f\u0442\u0438\u043c\u0438\u0437\u0438\u0440\u043e\u0432\u0430\u0442\u044c",
+    runFolder: "\u041e\u043f\u0442\u0438\u043c\u0438\u0437\u0438\u0440\u043e\u0432\u0430\u0442\u044c \u043f\u0430\u043f\u043a\u0443",
+    preparingZip: "\u0420\u0430\u0441\u043f\u0430\u043a\u043e\u0432\u043a\u0430 ZIP\u2026",
+    preparingFolder: "\u041a\u043e\u043f\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u0435 \u043f\u0430\u043f\u043a\u0438\u2026",
+    optimizerStarting: "\u0417\u0430\u043f\u0443\u0441\u043a \u043e\u043f\u0442\u0438\u043c\u0438\u0437\u0430\u0446\u0438\u0438\u2026",
+    exportingZip: "\u0423\u043f\u0430\u043a\u043e\u0432\u043a\u0430 ZIP\u2026",
+    exportingFolder: "\u041a\u043e\u043f\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u0435 \u0440\u0435\u0437\u0443\u043b\u044c\u0442\u0430\u0442\u0430\u2026",
+    scanFound: (label: string, codeCount: number) => `\u041d\u0430\u0439\u0434\u0435\u043d\u043e ${label} \u0432 ${codeCount} \u043a\u043e\u0434\u043e\u0432\u044b\u0445 \u0444\u0430\u0439\u043b\u0430\u0445`,
+    classify: (toConvert: number, toDelete: number) => `${toConvert} \u043d\u0430 \u043e\u043f\u0442\u0438\u043c\u0438\u0437\u0430\u0446\u0438\u044e \u00b7 ${toDelete} \u043d\u0430 \u0443\u0434\u0430\u043b\u0435\u043d\u0438\u0435`,
+    zeroImages: "0 \u043c\u0435\u0434\u0438\u0430\u0444\u0430\u0439\u043b\u043e\u0432",
+    phasePreparingZip: "\u0420\u0430\u0441\u043f\u0430\u043a\u043e\u0432\u043a\u0430 \u0430\u0440\u0445\u0438\u0432\u0430",
+    phasePreparingFolder: "\u041a\u043e\u043f\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u0435 \u043f\u0430\u043f\u043a\u0438",
+    phaseRunning: "\u041e\u043f\u0442\u0438\u043c\u0438\u0437\u0430\u0446\u0438\u044f \u043c\u0435\u0434\u0438\u0430\u0444\u0430\u0439\u043b\u043e\u0432",
+    phaseExportZip: "\u0423\u043f\u0430\u043a\u043e\u0432\u043a\u0430 ZIP",
+    phaseExportFolder: "\u041a\u043e\u043f\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u0435 \u0440\u0435\u0437\u0443\u043b\u044c\u0442\u0430\u0442\u0430",
+    filesProgress: (done: number, total: number, percent: number) => `${done} / ${total} \u0444\u0430\u0439\u043b\u043e\u0432 \u00b7 ${percent}%`,
+    queued: "\u0432 \u043e\u0447\u0435\u0440\u0435\u0434\u0438",
+    processed: "\u043e\u0431\u0440\u0430\u0431\u043e\u0442\u0430\u043d\u043e",
+    left: "\u043e\u0441\u0442\u0430\u043b\u043e\u0441\u044c",
+    saved: "\u042d\u043a\u043e\u043d\u043e\u043c\u0438\u044f",
+    compressed: "\u0441\u0436\u0430\u0442\u043e",
+    deleted: "\u0443\u0434\u0430\u043b\u0435\u043d\u043e",
+    filesUpdated: "\u0444\u0430\u0439\u043b\u043e\u0432 \u043e\u0431\u043d\u043e\u0432\u043b\u0435\u043d\u043e",
+    reviewTitle: "\u0413\u043e\u0442\u043e\u0432\u043e \u043a \u043f\u0440\u043e\u0432\u0435\u0440\u043a\u0435",
+    reviewHint: "\u041e\u0442\u043a\u0440\u043e\u0439 \u043f\u0430\u043f\u043a\u0443 \u0432\u044b\u0448\u0435, \u043f\u0440\u043e\u0432\u0435\u0440\u044c \u0440\u0435\u0437\u0443\u043b\u044c\u0442\u0430\u0442 \u0438 \u043f\u043e\u0442\u043e\u043c \u0432\u044b\u0431\u0435\u0440\u0438 \u0444\u043e\u0440\u043c\u0430\u0442 \u044d\u043a\u0441\u043f\u043e\u0440\u0442\u0430.",
+    tabConverted: "\u041e\u043f\u0442\u0438\u043c\u0438\u0437\u0438\u0440\u043e\u0432\u0430\u043d\u043e",
+    tabDeleted: "\u0423\u0434\u0430\u043b\u0435\u043d\u043e",
+    tabErrors: "\u041e\u0448\u0438\u0431\u043a\u0438",
+    freed: (value: string) => `\u043e\u0441\u0432\u043e\u0431\u043e\u0436\u0434\u0435\u043d\u043e ${value}`,
+    emptyTab: "\u0417\u0434\u0435\u0441\u044c \u043f\u043e\u043a\u0430 \u043d\u0438\u0447\u0435\u0433\u043e \u043d\u0435\u0442",
+    exportFormat: "\u0424\u043e\u0440\u043c\u0430\u0442 \u044d\u043a\u0441\u043f\u043e\u0440\u0442\u0430",
+    outputZip: (path: string) => `\u0412\u044b\u0445\u043e\u0434\u043d\u043e\u0439 \u0444\u0430\u0439\u043b: ${path}`,
+    outputFolder: (path: string) => `\u0412\u044b\u0445\u043e\u0434\u043d\u0430\u044f \u043f\u0430\u043f\u043a\u0430: ${path}`,
+    exportZip: "\u0423\u043f\u0430\u043a\u043e\u0432\u0430\u0442\u044c \u0438 \u044d\u043a\u0441\u043f\u043e\u0440\u0442\u0438\u0440\u043e\u0432\u0430\u0442\u044c ZIP",
+    exportFolder: "\u042d\u043a\u0441\u043f\u043e\u0440\u0442\u0438\u0440\u043e\u0432\u0430\u0442\u044c \u043f\u0430\u043f\u043a\u0443",
+    cancel: "\u041e\u0442\u043c\u0435\u043d\u0430",
+    exportDone: "\u042d\u043a\u0441\u043f\u043e\u0440\u0442 \u0437\u0430\u0432\u0435\u0440\u0448\u0435\u043d",
+    exportDoneZip: "\u041e\u043f\u0442\u0438\u043c\u0438\u0437\u0438\u0440\u043e\u0432\u0430\u043d\u043d\u044b\u0439 ZIP \u0441\u043e\u0445\u0440\u0430\u043d\u0435\u043d \u0440\u044f\u0434\u043e\u043c \u0441 \u0438\u0441\u0445\u043e\u0434\u043d\u044b\u043c \u0444\u0430\u0439\u043b\u043e\u043c.",
+    exportDoneFolder: "\u041e\u043f\u0442\u0438\u043c\u0438\u0437\u0438\u0440\u043e\u0432\u0430\u043d\u043d\u0430\u044f \u043f\u0430\u043f\u043a\u0430 \u0441\u043e\u0445\u0440\u0430\u043d\u0435\u043d\u0430 \u0440\u044f\u0434\u043e\u043c \u0441 \u0438\u0441\u0445\u043e\u0434\u043d\u043e\u0439.",
+    optimizeAnother: "\u041e\u043f\u0442\u0438\u043c\u0438\u0437\u0438\u0440\u043e\u0432\u0430\u0442\u044c \u0434\u0440\u0443\u0433\u043e\u0439 \u0441\u0430\u0439\u0442",
+    tryAgain: "\u041f\u043e\u043f\u0440\u043e\u0431\u043e\u0432\u0430\u0442\u044c \u0441\u043d\u043e\u0432\u0430"
   },
   en: {
     languageLabel: "Language",
@@ -145,26 +153,26 @@ const translations = {
     inputFolder: "Folder",
     dropZip: "Drop your site ZIP here",
     dropFolder: "Drop your site folder here",
-    browseZip: "or click to browse · .zip only",
+    browseZip: "or click to browse \u00b7 .zip only",
     browseFolder: "or click to browse",
     changeFile: "Change file",
     changeFolder: "Change folder",
     runZip: "Unzip & Optimize",
     runFolder: "Optimize Folder",
-    preparingZip: "Extracting ZIP…",
-    preparingFolder: "Copying folder…",
-    optimizerStarting: "Starting optimizer…",
-    exportingZip: "Packing ZIP…",
-    exportingFolder: "Copying output…",
+    preparingZip: "Extracting ZIP\u2026",
+    preparingFolder: "Copying folder\u2026",
+    optimizerStarting: "Starting optimizer\u2026",
+    exportingZip: "Packing ZIP\u2026",
+    exportingFolder: "Copying output\u2026",
     scanFound: (label: string, codeCount: number) => `Found ${label} across ${codeCount} code files`,
-    classify: (toConvert: number, toDelete: number) => `${toConvert} to optimize · ${toDelete} to delete`,
+    classify: (toConvert: number, toDelete: number) => `${toConvert} to optimize \u00b7 ${toDelete} to delete`,
     zeroImages: "0 media files",
     phasePreparingZip: "Extracting archive",
     phasePreparingFolder: "Copying folder",
     phaseRunning: "Optimizing media files",
     phaseExportZip: "Packing ZIP",
     phaseExportFolder: "Copying output",
-    filesProgress: (done: number, total: number, percent: number) => `${done} / ${total} files · ${percent}%`,
+    filesProgress: (done: number, total: number, percent: number) => `${done} / ${total} files \u00b7 ${percent}%`,
     queued: "queued",
     processed: "processed",
     left: "left",
@@ -201,24 +209,24 @@ function formatBytes(bytes: number): string {
 
 function formatSpeed(bytesPerSecond: number, locale: Locale): string {
   if (!bytesPerSecond || bytesPerSecond <= 0) {
-    return locale === "ru" ? "считаем скорость…" : "measuring speed…";
+    return locale === "ru" ? "\u0441\u0447\u0438\u0442\u0430\u0435\u043c \u0441\u043a\u043e\u0440\u043e\u0441\u0442\u044c\u2026" : "measuring speed\u2026";
   }
 
-  return `${formatBytes(Math.round(bytesPerSecond))}/${locale === "ru" ? "с" : "s"}`;
+  return `${formatBytes(Math.round(bytesPerSecond))}/${locale === "ru" ? "\u0441" : "s"}`;
 }
 
 function formatEta(seconds: number | null | undefined, locale: Locale): string {
   if (seconds == null || seconds <= 0) {
-    return locale === "ru" ? "еще немного…" : "almost there…";
+    return locale === "ru" ? "\u0435\u0449\u0435 \u043d\u0435\u043c\u043d\u043e\u0433\u043e\u2026" : "almost there\u2026";
   }
 
   const mins = Math.floor(seconds / 60);
   const secs = seconds % 60;
   if (mins <= 0) {
-    return locale === "ru" ? `примерно ${secs} сек.` : `about ${secs}s`;
+    return locale === "ru" ? `\u043f\u0440\u0438\u043c\u0435\u0440\u043d\u043e ${secs} \u0441\u0435\u043a.` : `about ${secs}s`;
   }
 
-  return locale === "ru" ? `примерно ${mins} мин ${secs} сек.` : `about ${mins}m ${secs}s`;
+  return locale === "ru" ? `\u043f\u0440\u0438\u043c\u0435\u0440\u043d\u043e ${mins} \u043c\u0438\u043d ${secs} \u0441\u0435\u043a.` : `about ${mins}m ${secs}s`;
 }
 
 type ReportReasonTone = "good" | "warn" | "danger" | "neutral";
@@ -239,6 +247,18 @@ interface ReportBreakdown {
   errors: number;
 }
 
+interface ReferencedAssetBreakdown {
+  total: number;
+  present: number;
+  missing: number;
+  image: number;
+  video: number;
+  font: number;
+  script: number;
+  style: number;
+  other: number;
+}
+
 function getReportReasonInfo(item: ReportItem, locale: Locale): ReportReasonInfo {
   const message = (item.message ?? "").toLowerCase();
 
@@ -250,7 +270,7 @@ function getReportReasonInfo(item: ReportItem, locale: Locale): ReportReasonInfo
   }
 
   if (item.type === "deleted") {
-    if (message.includes("существующим webp") || message.includes("existing webp")) {
+    if (message.includes("готовый webp") || message.includes("existing webp")) {
       return {
         label: locale === "ru" ? "Готовый WEBP" : "Existing WEBP",
         tone: "warn"
@@ -271,7 +291,7 @@ function getReportReasonInfo(item: ReportItem, locale: Locale): ReportReasonInfo
       };
     }
 
-    if (message.includes("пользовател") || message.includes("manual") || message.includes("user")) {
+    if (message.includes("вручную") || message.includes("manual") || message.includes("user")) {
       return {
         label: locale === "ru" ? "Удалено вручную" : "Manual delete",
         tone: "warn"
@@ -291,7 +311,7 @@ function getReportReasonInfo(item: ReportItem, locale: Locale): ReportReasonInfo
     };
   }
 
-  if (message.includes("пропущено") || message.includes("skipped")) {
+  if (message.includes("пропущ") || message.includes("skipped")) {
     return {
       label: locale === "ru" ? "Пропущено" : "Skipped",
       tone: "warn"
@@ -315,13 +335,13 @@ function getReportBreakdown(report: ReportItem[]): ReportBreakdown {
 
     if (item.type === "deleted") {
       summary.deleted += 1;
-      if (message.includes("существующим webp") || message.includes("existing webp")) {
+      if (message.includes("готовый webp") || message.includes("existing webp")) {
         summary.duplicates += 1;
       } else if (message.includes("не используется") || message.includes("unused")) {
         summary.unused += 1;
       } else if (message.includes("дубликат") || message.includes("duplicate")) {
         summary.duplicates += 1;
-      } else if (message.includes("пользовател") || message.includes("manual") || message.includes("user")) {
+      } else if (message.includes("вручную") || message.includes("manual") || message.includes("user")) {
         summary.manual += 1;
       }
       return summary;
@@ -331,7 +351,7 @@ function getReportBreakdown(report: ReportItem[]): ReportBreakdown {
       summary.dynamic += 1;
     }
 
-    if (message.includes("пропущено") || message.includes("skipped")) {
+    if (message.includes("пропущ") || message.includes("skipped")) {
       summary.skipped += 1;
     } else {
       summary.errors += 1;
@@ -347,6 +367,29 @@ function getReportBreakdown(report: ReportItem[]): ReportBreakdown {
     skipped: 0,
     dynamic: 0,
     errors: 0
+  });
+}
+
+function getReferencedAssetBreakdown(assets: ReferencedAsset[]): ReferencedAssetBreakdown {
+  return assets.reduce<ReferencedAssetBreakdown>((summary, asset) => {
+    summary.total += 1;
+    if (asset.exists) {
+      summary.present += 1;
+    } else {
+      summary.missing += 1;
+    }
+    summary[asset.kind] += 1;
+    return summary;
+  }, {
+    total: 0,
+    present: 0,
+    missing: 0,
+    image: 0,
+    video: 0,
+    font: 0,
+    script: 0,
+    style: 0,
+    other: 0
   });
 }
 
@@ -388,7 +431,7 @@ export default function App() {
   const [result, setResult] = useState<DonePayload | null>(null);
   const [errorMsg, setErrorMsg] = useState<string>("");
   const [isDragging, setIsDragging] = useState(false);
-  const [activeTab, setActiveTab] = useState<ReportTab>("converted");
+  const [activeTab, setActiveTab] = useState<ReportTab>("assets");
   const [exportMode, setExportMode] = useState<ExportMode>("zip");
   const [floatingFiles, setFloatingFiles] = useState<FloatingFile[]>([]);
   const [currentFile, setCurrentFile] = useState<string>("");
@@ -412,6 +455,7 @@ export default function App() {
   const [isInstallingUpdate, setIsInstallingUpdate] = useState(false);
   const [updateProgress, setUpdateProgress] = useState<UpdateDownloadProgress | null>(null);
   const [closePromptOpen, setClosePromptOpen] = useState(false);
+  const [isReportOpen, setIsReportOpen] = useState(false);
   const [batchPaused, setBatchPaused] = useState(false);
   const [autoCloseSeconds, setAutoCloseSeconds] = useState<number | null>(null);
   const unlisten = useRef<(() => void) | null>(null);
@@ -742,30 +786,30 @@ export default function App() {
   const alternateLanguageLabel = alternateLocale === "ru"
     ? (locale === "ru" ? translations.ru.languageNative : translations.en.languageNative)
     : (locale === "ru" ? t.languageEnglish : translations.en.languageEnglish);
-  const extraCleanupTitle = locale === "ru" ? "Дополнительная очистка" : "Extra Cleanup";
-  const removeUnusedLabel = locale === "ru" ? "Удалять неиспользуемые медиафайлы" : "Remove unused media files";
+  const extraCleanupTitle = locale === "ru" ? "\u0414\u043e\u043f\u043e\u043b\u043d\u0438\u0442\u0435\u043b\u044c\u043d\u0430\u044f \u043e\u0447\u0438\u0441\u0442\u043a\u0430" : "Extra Cleanup";
+  const removeUnusedLabel = locale === "ru" ? "\u0423\u0434\u0430\u043b\u044f\u0442\u044c \u043d\u0435\u0438\u0441\u043f\u043e\u043b\u044c\u0437\u0443\u0435\u043c\u044b\u0435 \u043c\u0435\u0434\u0438\u0430\u0444\u0430\u0439\u043b\u044b" : "Remove unused media files";
   const removeUnusedHint = locale === "ru"
-    ? "Осторожный режим: удаляются только файлы, для которых не найдено надежных ссылок в коде."
+    ? "\u041e\u0441\u0442\u043e\u0440\u043e\u0436\u043d\u044b\u0439 \u0440\u0435\u0436\u0438\u043c: \u0443\u0434\u0430\u043b\u044f\u044e\u0442\u0441\u044f \u0442\u043e\u043b\u044c\u043a\u043e \u0444\u0430\u0439\u043b\u044b, \u0434\u043b\u044f \u043a\u043e\u0442\u043e\u0440\u044b\u0445 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u043e \u043d\u0430\u0434\u0435\u0436\u043d\u044b\u0445 \u0441\u0441\u044b\u043b\u043e\u043a \u0432 \u043a\u043e\u0434\u0435."
     : "Use carefully: custom templates and lazy-load setups may need review.";
-  const dedupeLabel = locale === "ru" ? "Удалять дубликаты медиафайлов" : "Remove duplicate media files";
+  const dedupeLabel = locale === "ru" ? "\u0423\u0434\u0430\u043b\u044f\u0442\u044c \u0434\u0443\u0431\u043b\u0438\u043a\u0430\u0442\u044b \u043c\u0435\u0434\u0438\u0430\u0444\u0430\u0439\u043b\u043e\u0432" : "Remove duplicate media files";
   const dedupeHint = locale === "ru"
-    ? "Дубликаты ищутся по содержимому файла и объединяются в один оригинал."
+    ? "\u0414\u0443\u0431\u043b\u0438\u043a\u0430\u0442\u044b \u0438\u0449\u0443\u0442\u0441\u044f \u043f\u043e \u0441\u043e\u0434\u0435\u0440\u0436\u0438\u043c\u043e\u043c\u0443 \u0444\u0430\u0439\u043b\u0430 \u0438 \u043e\u0431\u044a\u0435\u0434\u0438\u043d\u044f\u044e\u0442\u0441\u044f \u0432 \u043e\u0434\u0438\u043d \u043e\u0440\u0438\u0433\u0438\u043d\u0430\u043b."
     : "Duplicates are detected by file content and merged into a single original.";
-  const quickOptimizeLabel = locale === "ru" ? "Быстро оптимизировать пачку" : "Quick optimize batch";
-  const quickSummaryTitle = locale === "ru" ? "Пакетная оптимизация завершена" : "Batch optimization complete";
+  const quickOptimizeLabel = locale === "ru" ? "\u0411\u044b\u0441\u0442\u0440\u043e \u043e\u043f\u0442\u0438\u043c\u0438\u0437\u0438\u0440\u043e\u0432\u0430\u0442\u044c \u043f\u0430\u0447\u043a\u0443" : "Quick optimize batch";
+  const quickSummaryTitle = locale === "ru" ? "\u041f\u0430\u043a\u0435\u0442\u043d\u0430\u044f \u043e\u043f\u0442\u0438\u043c\u0438\u0437\u0430\u0446\u0438\u044f \u0437\u0430\u0432\u0435\u0440\u0448\u0435\u043d\u0430" : "Batch optimization complete";
   const quickSummaryHint = locale === "ru"
-    ? "Все выбранные сайты обработаны автоматически и сохранены рядом с исходниками."
+    ? "\u0412\u0441\u0435 \u0432\u044b\u0431\u0440\u0430\u043d\u043d\u044b\u0435 \u0441\u0430\u0439\u0442\u044b \u043e\u0431\u0440\u0430\u0431\u043e\u0442\u0430\u043d\u044b \u0430\u0432\u0442\u043e\u043c\u0430\u0442\u0438\u0447\u0435\u0441\u043a\u0438 \u0438 \u0441\u043e\u0445\u0440\u0430\u043d\u0435\u043d\u044b \u0440\u044f\u0434\u043e\u043c \u0441 \u0438\u0441\u0445\u043e\u0434\u043d\u0438\u043a\u0430\u043c\u0438."
     : "All selected sites were processed automatically and saved next to the originals.";
-  const settingsTitle = locale === "ru" ? "Настройки" : "Settings";
-  const settingsSave = locale === "ru" ? "Сохранить" : "Save";
-  const settingsClose = locale === "ru" ? "Закрыть" : "Close";
-  const contextMenuTitle = locale === "ru" ? "Пункты контекстного меню" : "Context menu entries";
-  const updateTitle = locale === "ru" ? "Доступна новая версия" : "New version available";
-  const updateHint = locale === "ru" ? "Хотите скачать и установить обновление сейчас?" : "Do you want to download and install the update now?";
-  const updateNowLabel = locale === "ru" ? "Обновить сейчас" : "Update now";
-  const updateLaterLabel = locale === "ru" ? "Позже" : "Later";
-  const contextNormalLabel = locale === "ru" ? "Оптимизировать сайт" : "Optimize site";
-  const contextQuickLabel = locale === "ru" ? "Быстро оптимизировать сайт" : "Quick optimize site";
+  const settingsTitle = locale === "ru" ? "\u041d\u0430\u0441\u0442\u0440\u043e\u0439\u043a\u0438" : "Settings";
+  const settingsSave = locale === "ru" ? "\u0421\u043e\u0445\u0440\u0430\u043d\u0438\u0442\u044c" : "Save";
+  const settingsClose = locale === "ru" ? "\u0417\u0430\u043a\u0440\u044b\u0442\u044c" : "Close";
+  const contextMenuTitle = locale === "ru" ? "\u041f\u0443\u043d\u043a\u0442\u044b \u043a\u043e\u043d\u0442\u0435\u043a\u0441\u0442\u043d\u043e\u0433\u043e \u043c\u0435\u043d\u044e" : "Context menu entries";
+  const updateTitle = locale === "ru" ? "\u0414\u043e\u0441\u0442\u0443\u043f\u043d\u0430 \u043d\u043e\u0432\u0430\u044f \u0432\u0435\u0440\u0441\u0438\u044f" : "New version available";
+  const updateHint = locale === "ru" ? "\u0425\u043e\u0442\u0438\u0442\u0435 \u0441\u043a\u0430\u0447\u0430\u0442\u044c \u0438 \u0443\u0441\u0442\u0430\u043d\u043e\u0432\u0438\u0442\u044c \u043e\u0431\u043d\u043e\u0432\u043b\u0435\u043d\u0438\u0435 \u0441\u0435\u0439\u0447\u0430\u0441?" : "Do you want to download and install the update now?";
+  const updateNowLabel = locale === "ru" ? "\u041e\u0431\u043d\u043e\u0432\u0438\u0442\u044c \u0441\u0435\u0439\u0447\u0430\u0441" : "Update now";
+  const updateLaterLabel = locale === "ru" ? "\u041f\u043e\u0437\u0436\u0435" : "Later";
+  const contextNormalLabel = locale === "ru" ? "\u041e\u043f\u0442\u0438\u043c\u0438\u0437\u0438\u0440\u043e\u0432\u0430\u0442\u044c \u0441\u0430\u0439\u0442" : "Optimize site";
+  const contextQuickLabel = locale === "ru" ? "\u0411\u044b\u0441\u0442\u0440\u043e \u043e\u043f\u0442\u0438\u043c\u0438\u0437\u0438\u0440\u043e\u0432\u0430\u0442\u044c \u0441\u0430\u0439\u0442" : "Quick optimize site";
 
   useEffect(() => {
     let unlistenDrop: (() => void) | null = null;
@@ -816,12 +860,6 @@ export default function App() {
       ? await invoke<string[]>("open_zip_dialog_multi")
       : await invoke<string[]>("open_folder_dialog_multi");
     return paths.filter(Boolean);
-  };
-
-  const getTabLabel = (tab: ReportTab) => {
-    if (tab === "converted") return t.tabConverted;
-    if (tab === "deleted") return t.tabDeleted;
-    return t.tabErrors;
   };
 
   const waitWhileBatchPaused = useCallback(async () => {
@@ -1110,7 +1148,7 @@ export default function App() {
       }
 
       const currentPath = paths[index];
-      const shortName = currentPath.split(/[\/]/).pop() ?? currentPath;
+      const shortName = currentPath.split(/[\\/]/).pop() ?? currentPath;
       setInputPath(currentPath);
       setInputMode(mode);
       setProgress({
@@ -1133,7 +1171,8 @@ export default function App() {
           converted: donePayload.converted,
           deleted: donePayload.deleted,
           replacedFiles: donePayload.replacedFiles,
-          report: donePayload.report
+          report: donePayload.report,
+          referencedAssets: donePayload.referencedAssets
         });
       } catch (error: any) {
         if (stopRequestedRef.current) {
@@ -1174,6 +1213,7 @@ export default function App() {
     setResult(null);
     setBatchResults([]);
     setActiveBatchIndex(0);
+    setIsReportOpen(false);
     setErrorMsg("");
     setFloatingFiles([]);
     setCurrentFile("");
@@ -1191,6 +1231,18 @@ export default function App() {
   const pauseLabel = locale === "ru" ? "\u041f\u0430\u0443\u0437\u0430" : "Pause";
   const resumeLabel = locale === "ru" ? "\u041f\u0440\u043e\u0434\u043e\u043b\u0436\u0438\u0442\u044c" : "Resume";
   const stopLabel = locale === "ru" ? "\u041e\u0441\u0442\u0430\u043d\u043e\u0432\u0438\u0442\u044c" : "Stop";
+  const openReportLabel = locale === "ru" ? "\u0414\u0435\u0442\u0430\u043b\u044c\u043d\u044b\u0439 \u043e\u0442\u0447\u0435\u0442" : "Detailed report";
+  const reportTitle = locale === "ru" ? "\u041f\u043e\u0434\u0440\u043e\u0431\u043d\u044b\u0439 \u043e\u0442\u0447\u0435\u0442" : "Detailed report";
+  const reportCloseLabel = locale === "ru" ? "\u0417\u0430\u043a\u0440\u044b\u0442\u044c \u043e\u0442\u0447\u0435\u0442" : "Close report";
+  const reportSiteLabel = locale === "ru" ? "\u0421\u0430\u0439\u0442\u044b \u0432 \u043f\u0430\u0447\u043a\u0435" : "Batch sites";
+  const reportAssetsLabel = locale === "ru" ? "\u041d\u0430\u0439\u0434\u0435\u043d\u043e \u0432 \u043a\u043e\u0434\u0435" : "Found in code";
+  const reportOverviewLabel = locale === "ru" ? "\u041e\u0431\u0437\u043e\u0440 \u0441\u0430\u0439\u0442\u0430" : "Site overview";
+  const reportPresentLabel = locale === "ru" ? "\u043d\u0430 \u043c\u0435\u0441\u0442\u0435" : "present";
+  const reportMissingLabel = locale === "ru" ? "\u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u043e" : "missing";
+  const reportAssetsHint = locale === "ru" ? "\u0412\u0441\u0435 \u0430\u0441\u0441\u0435\u0442\u044b, \u043a\u043e\u0442\u043e\u0440\u044b\u0435 \u0430\u043d\u0430\u043b\u0438\u0437\u0430\u0442\u043e\u0440 \u043d\u0430\u0448\u0435\u043b \u0432 \u043a\u043e\u0434\u0435." : "Every asset the analyzer found in code.";
+  const reportPerformanceLabel = locale === "ru" ? "\u041f\u043e\u043b\u0435\u0437\u043d\u044b\u0439 \u044d\u0444\u0444\u0435\u043a\u0442" : "Optimization impact";
+  const reportCoverageLabel = locale === "ru" ? "\u041f\u043e\u043a\u0440\u044b\u0442\u0438\u0435 \u043a\u043e\u0434\u0430" : "Code coverage";
+  const reportDetailHint = locale === "ru" ? "\u041d\u0438\u0436\u0435 \u043f\u043e\u043b\u043d\u0430\u044f \u0442\u0435\u0445\u043d\u0438\u0447\u0435\u0441\u043a\u0430\u044f \u0440\u0430\u0441\u043a\u043b\u0430\u0434\u043a\u0430 \u043f\u043e \u0441\u0430\u0439\u0442\u0443." : "Full technical breakdown for this site.";
   const closePromptTitle = locale === "ru" ? "\u041f\u0440\u043e\u0446\u0435\u0441\u0441 \u0435\u0449\u0435 \u0438\u0434\u0435\u0442" : "Process is still running";
   const closePromptHint = locale === "ru"
     ? "\u041e\u0441\u0442\u0430\u043d\u043e\u0432\u0438\u0442\u044c \u0442\u0435\u043a\u0443\u0449\u0443\u044e \u0437\u0430\u0434\u0430\u0447\u0443 \u0438 \u0437\u0430\u043a\u0440\u044b\u0442\u044c \u043f\u0440\u0438\u043b\u043e\u0436\u0435\u043d\u0438\u0435?"
@@ -1208,52 +1260,221 @@ export default function App() {
       : (locale === "ru" ? "Загрузка обновления" : "Downloading update");
   const pausedStateLabel = locale === "ru" ? "Пакетная обработка на паузе" : "Batch processing paused";
   const currentStep = stepIndex[phase] ?? 0;
-  const filteredReport = result?.report.filter((item) => activeTab === "errors" ? item.type === "error" : item.type === activeTab) ?? [];
   const batchSuccessCount = batchResults.filter((item) => item.success).length;
   const batchErrorCount = batchResults.length - batchSuccessCount;
   const batchSavedBytes = batchResults.reduce((sum, item) => sum + (item.savedBytes ?? 0), 0);
   const activeBatchItem = batchResults[activeBatchIndex] ?? null;
-  const activeBatchReport = activeBatchItem?.report?.filter((item) => activeTab === "errors" ? item.type === "error" : item.type === activeTab) ?? [];
   const reviewBreakdown = getReportBreakdown(result?.report ?? []);
   const activeBatchBreakdown = getReportBreakdown(activeBatchItem?.report ?? []);
+  const reviewReferencedBreakdown = getReferencedAssetBreakdown(result?.referencedAssets ?? []);
+  const activeBatchReferencedBreakdown = getReferencedAssetBreakdown(activeBatchItem?.referencedAssets ?? []);
 
-  const renderDetailedSummary = (summary: ReportBreakdown) => {
+  const getTabLabel = (tab: ReportTab) => {
+    if (tab === "assets") return reportAssetsLabel;
+    if (tab === "converted") return t.tabConverted;
+    if (tab === "deleted") return t.tabDeleted;
+    return t.tabErrors;
+  };
+
+  const getAssetKindLabel = (kind: ReferencedAsset["kind"]) => {
+    if (kind === "image") return "IMG";
+    if (kind === "video") return "VID";
+    if (kind === "font") return "FNT";
+    if (kind === "script") return "JS";
+    if (kind === "style") return "CSS";
+    return "FILE";
+  };
+
+  const getAssetKindTitle = (kind: ReferencedAsset["kind"]) => {
+    if (kind === "image") return locale === "ru" ? "\u0418\u0437\u043e\u0431\u0440\u0430\u0436\u0435\u043d\u0438\u044f" : "Images";
+    if (kind === "video") return locale === "ru" ? "\u0412\u0438\u0434\u0435\u043e" : "Video";
+    if (kind === "font") return locale === "ru" ? "\u0428\u0440\u0438\u0444\u0442\u044b" : "Fonts";
+    if (kind === "script") return locale === "ru" ? "\u0421\u043a\u0440\u0438\u043f\u0442\u044b" : "Scripts";
+    if (kind === "style") return locale === "ru" ? "\u0421\u0442\u0438\u043b\u0438" : "Styles";
+    return locale === "ru" ? "\u0414\u0440\u0443\u0433\u043e\u0435" : "Other";
+  };
+
+  const getReportItemsForTab = (report: ReportItem[], tab: ReportTab) => {
+    if (tab === "errors") return report.filter((item) => item.type === "error");
+    if (tab === "converted") return report.filter((item) => item.type === "converted");
+    if (tab === "deleted") return report.filter((item) => item.type === "deleted");
+    return [];
+  };
+
+  const getTabCount = (report: ReportItem[], referencedAssets: ReferencedAsset[], tab: ReportTab) => {
+    if (tab === "assets") return referencedAssets.length;
+    return getReportItemsForTab(report, tab).length;
+  };
+
+  const renderReferencedAssetSummary = (summary: ReferencedAssetBreakdown) => {
     const items = [
-      {
-        value: summary.converted,
-        label: locale === "ru" ? "оптимизировано" : "optimized",
-        tone: "good"
-      },
-      {
-        value: summary.unused,
-        label: locale === "ru" ? "не используется" : "unused",
-        tone: "warn"
-      },
-      {
-        value: summary.duplicates,
-        label: locale === "ru" ? "дубликаты" : "duplicates",
-        tone: "warn"
-      },
-      {
-        value: summary.skipped + summary.dynamic,
-        label: locale === "ru" ? "пропущено" : "skipped",
-        tone: "neutral"
-      },
-      {
-        value: summary.errors,
-        label: locale === "ru" ? "ошибки" : "errors",
-        tone: "danger"
-      }
-    ] as const;
+      { key: "image", label: getAssetKindTitle("image"), value: summary.image },
+      { key: "video", label: getAssetKindTitle("video"), value: summary.video },
+      { key: "font", label: getAssetKindTitle("font"), value: summary.font },
+      { key: "script", label: getAssetKindTitle("script"), value: summary.script },
+      { key: "style", label: getAssetKindTitle("style"), value: summary.style }
+    ].filter((item) => item.value > 0);
 
     return (
-      <div className="report-summary-grid">
+      <div className="report-chip-grid">
         {items.map((item) => (
-          <div key={item.label} className={`report-summary-item report-summary-item--${item.tone}`}>
-            <span className="report-summary-value">{item.value}</span>
-            <span className="report-summary-label">{item.label}</span>
+          <div key={item.key} className="report-chip-card">
+            <span className="report-chip-value">{item.value}</span>
+            <span className="report-chip-label">{item.label}</span>
           </div>
         ))}
+      </div>
+    );
+  };
+
+  const renderReportDistribution = (report: ReportItem[], summary: ReportBreakdown) => {
+    const errors = report.filter((item) => item.type === "error");
+    const skipped = summary.skipped + summary.dynamic;
+    const totalProblemEvents = summary.errors + skipped;
+    const grouped = new Map<string, { count: number; files: string[] }>();
+    errors.forEach((item) => {
+      const raw = (item.message ?? (locale === "ru" ? "Неизвестная ошибка" : "Unknown error")).trim();
+      const label = raw.split("\n")[0].slice(0, 120);
+      const current = grouped.get(label);
+      if (!current) {
+        grouped.set(label, { count: 1, files: [item.file] });
+      } else {
+        current.count += 1;
+        if (current.files.length < 2) current.files.push(item.file);
+      }
+    });
+    const topReasons = Array.from(grouped.entries())
+      .map(([reason, info]) => ({ reason, count: info.count, files: info.files }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 3);
+    const latestErrors = errors.slice(0, 4);
+    const maxReasonCount = topReasons[0]?.count ?? 1;
+
+    return (
+      <div className="error-insight-panel">
+        <div className="error-kpi-grid">
+          <div className="error-kpi-card">
+            <span className="error-kpi-value">{totalProblemEvents}</span>
+            <span className="error-kpi-label">{locale === "ru" ? "\u0412\u0441\u0435\u0433\u043e \u043f\u0440\u043e\u0431\u043b\u0435\u043c" : "Total issues"}</span>
+          </div>
+          <div className="error-kpi-card">
+            <span className="error-kpi-value">{summary.errors}</span>
+            <span className="error-kpi-label">{locale === "ru" ? "\u041e\u0448\u0438\u0431\u043a\u0438" : "Errors"}</span>
+          </div>
+          <div className="error-kpi-card">
+            <span className="error-kpi-value">{skipped}</span>
+            <span className="error-kpi-label">{locale === "ru" ? "\u041f\u0440\u043e\u043f\u0443\u0441\u043a\u0438 / dynamic" : "Skipped / dynamic"}</span>
+          </div>
+        </div>
+
+        <div className="error-reasons">
+          <span className="error-reasons-title">{locale === "ru" ? "\u0422\u043e\u043f \u043f\u0440\u0438\u0447\u0438\u043d\u044b" : "Top reasons"}</span>
+          {topReasons.length === 0 ? (
+            <div className="error-empty">{locale === "ru" ? "\u041e\u0448\u0438\u0431\u043e\u043a \u043d\u0435\u0442" : "No errors found"}</div>
+          ) : (
+            <div className="error-reasons-list">
+              {topReasons.map((item, index) => (
+                <div key={`${item.reason}-${index}`} className="error-reason-item">
+                  <div className="error-reason-copy">
+                    <span className="error-reason-text" title={item.reason}>{item.reason}</span>
+                    <span className="error-reason-count">{item.count}</span>
+                  </div>
+                  <div className="error-reason-track">
+                    <span
+                      className="error-reason-fill"
+                      style={{
+                        width: `${Math.max(12, Math.round((item.count / maxReasonCount) * 100))}%`,
+                        animationDelay: `${220 + index * 90}ms`
+                      }}
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {latestErrors.length > 0 && (
+          <div className="error-latest">
+            <span className="error-latest-title">{locale === "ru" ? "\u041f\u043e\u0441\u043b\u0435\u0434\u043d\u0438\u0435 \u043e\u0448\u0438\u0431\u043a\u0438" : "Latest issues"}</span>
+            {latestErrors.map((item, index) => (
+              <div key={`${item.file}-${index}`} className="error-latest-item">
+                <span className="error-latest-file" title={item.file}>{item.file}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const renderCoverageDistribution = (summary: ReferencedAssetBreakdown) => {
+    const total = summary.total || 1;
+    const entries = [
+      { key: "present", label: reportPresentLabel, value: summary.present, tone: "good" },
+      { key: "missing", label: reportMissingLabel, value: summary.missing, tone: "danger" }
+    ];
+
+    return (
+      <div className="report-bars">
+        {entries.map((entry, index) => (
+          <div key={entry.key} className="report-bar-row">
+            <div className="report-bar-copy">
+              <span className="report-bar-label">{entry.label}</span>
+              <span className="report-bar-value">{entry.value}</span>
+            </div>
+            <div className="report-bar-track">
+              <span
+                className={`report-bar-fill report-bar-fill--${entry.tone}`}
+                style={{
+                  width: `${Math.max(4, Math.round((entry.value / total) * 100))}%`,
+                  animationDelay: `${180 + index * 110}ms`
+                }}
+              />
+            </div>
+          </div>
+        ))}
+      </div>
+    );
+  };
+
+  const renderOverviewDonut = (summary: ReportBreakdown) => {
+    const slices = [
+      { key: "optimized", value: summary.converted, color: "var(--teal)", label: locale === "ru" ? "Оптимизировано" : "Optimized" },
+      { key: "unused", value: summary.unused, color: "#f3d89a", label: locale === "ru" ? "Не используется" : "Unused" },
+      { key: "duplicates", value: summary.duplicates, color: "#7fa7ff", label: locale === "ru" ? "Дубликаты" : "Duplicates" },
+      { key: "errors", value: summary.errors + summary.skipped + summary.dynamic, color: "var(--red)", label: locale === "ru" ? "Ошибки / пропуски" : "Errors / skipped" }
+    ];
+    const total = slices.reduce((sum, part) => sum + part.value, 0);
+    if (total <= 0) return null;
+
+    let cursor = 0;
+    const stops = slices
+      .filter((slice) => slice.value > 0)
+      .map((slice) => {
+        const from = cursor;
+        const angle = (slice.value / total) * 360;
+        cursor += angle;
+        return `${slice.color} ${from}deg ${cursor}deg`;
+      });
+
+    return (
+      <div className="overview-donut-wrap report-animate report-animate--delay-1">
+        <div className="overview-donut" style={{ background: `conic-gradient(${stops.join(", ")})` }}>
+          <div className="overview-donut-hole">
+            <span className="overview-donut-total">{total}</span>
+            <span className="overview-donut-total-label">{locale === "ru" ? "всего" : "total"}</span>
+          </div>
+        </div>
+        <div className="overview-donut-legend">
+          {slices.filter((slice) => slice.value > 0).map((slice, index) => (
+            <div key={slice.key} className="overview-donut-legend-item" style={{ animationDelay: `${220 + index * 90}ms` }}>
+              <span className="overview-donut-dot" style={{ background: slice.color }} />
+              <span className="overview-donut-label">{slice.label}</span>
+              <span className="overview-donut-value">{slice.value}</span>
+            </div>
+          ))}
+        </div>
       </div>
     );
   };
@@ -1274,7 +1495,7 @@ export default function App() {
           </div>
         </div>
 
-        {item.type === "converted" && (
+            {item.type === "converted" && (
           <span className="report-meta">
             {formatBytes(item.originalSize ?? 0)} {"->"} {formatBytes(item.newSize ?? 0)}
             {typeof item.savedPercent === "number" && (
@@ -1294,6 +1515,141 @@ export default function App() {
     );
   };
 
+  const renderReferencedAssetItem = (asset: ReferencedAsset, key: string) => (
+    <div key={key} className={`report-item report-item--asset ${asset.exists ? "" : "report-item--error"}`}>
+      <div className="report-copy">
+        <span className="report-file">{asset.file}</span>
+        <div className="report-detail-line">
+          <span className="report-fmt">{getAssetKindLabel(asset.kind)}</span>
+          <span className={`report-reason ${asset.exists ? "report-reason--good" : "report-reason--danger"}`}>
+            {asset.exists ? reportPresentLabel : reportMissingLabel}
+          </span>
+          <span className="report-detail-text">{getAssetKindTitle(asset.kind)}</span>
+        </div>
+      </div>
+    </div>
+  );
+
+  const openDetailedReport = async () => {
+    setActiveTab("assets");
+    setIsReportOpen(true);
+    try {
+      await invoke("maximize_main_window");
+    } catch {
+      // ignore window resize issues and still show the report
+    }
+  };
+
+  const closeDetailedReport = async () => {
+    setIsReportOpen(false);
+    try {
+      await invoke("restore_main_window");
+    } catch {
+      // ignore window resize issues on close
+    }
+  };
+
+  const renderReportInspector = (
+    report: ReportItem[],
+    referencedAssets: ReferencedAsset[],
+    breakdown: ReportBreakdown,
+    assetBreakdown: ReferencedAssetBreakdown,
+    options: {
+      title: string;
+      output?: string;
+      hint?: string;
+      savedBytes: number;
+      converted: number;
+      deleted: number;
+      replacedFiles?: number;
+    }
+  ) => {
+    const visibleItems = activeTab === "assets"
+      ? referencedAssets
+      : getReportItemsForTab(report, activeTab);
+
+    return (
+      <div className="report-inspector">
+        <div className="result-summary batch-summary batch-summary--detail report-animate">
+          <div className="result-hero">
+            <span className="result-hero-label">{t.saved}</span>
+            <span className="result-hero-value">{formatBytes(options.savedBytes)}</span>
+          </div>
+          <div className="result-stats">
+            <div className="stat">
+              <span className="stat-value stat-value--teal">{options.converted}</span>
+              <span className="stat-label">{t.compressed}</span>
+            </div>
+            <div className="stat-divider" />
+            <div className="stat">
+              <span className="stat-value stat-value--red">{options.deleted}</span>
+              <span className="stat-label">{t.deleted}</span>
+            </div>
+            <div className="stat-divider" />
+            <div className="stat">
+              <span className="stat-value">{options.replacedFiles ?? 0}</span>
+              <span className="stat-label">{t.filesUpdated}</span>
+            </div>
+          </div>
+        </div>
+
+        <div className="report-hero-grid">
+          <section className="report-panel report-panel--overview report-animate report-animate--delay-1">
+            <div className="report-panel-head">
+              <span className="report-panel-eyebrow">{reportOverviewLabel}</span>
+              <span className="report-detail-title">{options.title}</span>
+            </div>
+            {options.output && <p className="review-callout-path">{options.output}</p>}
+            <p className="review-callout-hint">{options.hint ?? reportDetailHint}</p>
+            {renderOverviewDonut(breakdown)}
+          </section>
+
+          <section className="report-panel report-animate report-animate--delay-2">
+            <div className="report-panel-head">
+              <span className="report-panel-eyebrow">{reportPerformanceLabel}</span>
+              <span className="report-detail-title">{locale === "ru" ? "\u041e\u0448\u0438\u0431\u043a\u0438 \u0438 \u043f\u0440\u0438\u0447\u0438\u043d\u044b" : "Errors and reasons"}</span>
+            </div>
+            {renderReportDistribution(report, breakdown)}
+          </section>
+
+          <section className="report-panel report-panel--coverage report-animate report-animate--delay-3">
+            <div className="report-panel-head">
+              <span className="report-panel-eyebrow">{reportCoverageLabel}</span>
+              <span className="report-detail-title">{reportAssetsLabel}</span>
+            </div>
+            <p className="review-callout-hint">{reportAssetsHint}</p>
+            <div className="report-coverage-meta">
+              <span>{assetBreakdown.total}</span>
+              <span>{reportPresentLabel}: {assetBreakdown.present}</span>
+              <span>{reportMissingLabel}: {assetBreakdown.missing}</span>
+            </div>
+            {renderCoverageDistribution(assetBreakdown)}
+            {renderReferencedAssetSummary(assetBreakdown)}
+          </section>
+        </div>
+
+        <div className="report-tabs report-tabs--spacious report-animate report-animate--delay-4">
+          {(["assets", "converted", "deleted", "errors"] as const).map((tab) => (
+            <button key={tab} className={`report-tab ${activeTab === tab ? "report-tab--active" : ""}`} onClick={() => setActiveTab(tab)}>
+              {getTabLabel(tab)} <span className="tab-count">{getTabCount(report, referencedAssets, tab)}</span>
+            </button>
+          ))}
+        </div>
+
+        <div
+          key={`report-list-${options.title}-${activeTab}`}
+          className="report-list report-list--inspector report-animate report-animate--delay-5 report-list-enter"
+        >
+          {activeTab === "assets"
+            ? (visibleItems as ReferencedAsset[]).map((asset, index) => renderReferencedAssetItem(asset, `asset-${options.title}-${index}`))
+            : (visibleItems as ReportItem[]).map((item, index) => renderReportItem(item, `inspector-${options.title}-${activeTab}-${index}`))}
+          {visibleItems.length === 0 && (
+            <div className="report-empty">{t.emptyTab}</div>
+          )}
+        </div>
+      </div>
+    );
+  };
   return (
     <div className="app">
       <header className="header">
@@ -1341,7 +1697,7 @@ export default function App() {
           <button className="settings-btn" type="button" onClick={() => setIsSettingsOpen(true)} aria-label={settingsTitle}>
             <span className="settings-btn-icon">⚙</span>
           </button>
-          <span className="header-version">v0.5.2</span>
+          <span className="header-version">v0.6.0</span>
         </div>
       </header>
 
@@ -1360,7 +1716,7 @@ export default function App() {
             <div className={`dropzone ${isDragging ? "dropzone--active" : ""} ${inputPath ? "dropzone--selected" : ""}`} onClick={!inputPath ? pickInput : undefined}>
               {!inputPath ? (
                 <>
-                  <div className="dropzone-icon">{inputMode === "zip" ? "⇣" : "⌃"}</div>
+                  <div className="dropzone-icon">{inputMode === "zip" ? "↓" : "⌂"}</div>
                   <p className="dropzone-title">{inputMode === "zip" ? t.dropZip : t.dropFolder}</p>
                   <p className="dropzone-sub">{inputMode === "zip" ? t.browseZip : t.browseFolder}</p>
                 </>
@@ -1493,7 +1849,7 @@ export default function App() {
               <div className="floating-arena">
                 {floatingFiles.map((file) => (
                   <div key={file.id} className="floating-file" style={{ left: `${file.x}%`, top: `${file.y}%` }}>
-                    <span className="floating-file-icon">◈</span>
+                    <span className="floating-file-icon">•</span>
                     <span className="floating-file-name">{file.name}</span>
                   </div>
                 ))}
@@ -1531,7 +1887,7 @@ export default function App() {
             </div>
 
             <div className="review-callout">
-              <span className="review-callout-icon">⌖</span>
+              <span className="review-callout-icon">✦</span>
               <div className="review-callout-body">
                 <p className="review-callout-title">{t.reviewTitle}</p>
                 <p className="review-callout-path">{workDir}</p>
@@ -1539,30 +1895,13 @@ export default function App() {
               </div>
             </div>
 
-            <div className="report report--full">
-              <div className="report-tabs">
-                {(["converted", "deleted", "errors"] as const).map((tab) => {
-                  const count = tab === "errors"
-                    ? result.report.filter((item) => item.type === "error").length
-                    : result.report.filter((item) => item.type === tab).length;
-                  return (
-                    <button key={tab} className={`report-tab ${activeTab === tab ? "report-tab--active" : ""}`} onClick={() => setActiveTab(tab)}>
-                      {getTabLabel(tab)} <span className="tab-count">{count}</span>
-                    </button>
-                  );
-                })}
+            <div className="report-shortcut-card">
+              <div className="report-shortcut-copy">
+                <span className="report-shortcut-eyebrow">{reportOverviewLabel}</span>
+                <h3 className="report-shortcut-title">{reportTitle}</h3>
+                <p className="report-shortcut-text">{reportDetailHint}</p>
               </div>
-
-              <div className="report-detail-header">
-                <span className="report-detail-title">{locale === "ru" ? "Итог по сайту" : "Site summary"}</span>
-                {renderDetailedSummary(reviewBreakdown)}
-              </div>
-
-              <div className="report-list">
-                {filteredReport.map((item, index) => renderReportItem(item, `review-${index}`))}
-
-                {filteredReport.length === 0 && <div className="report-empty">{t.emptyTab}</div>}
-              </div>
+              <button className="btn-primary" onClick={() => void openDetailedReport()}>{openReportLabel}</button>
             </div>
 
             <div className="export-picker">
@@ -1598,7 +1937,10 @@ export default function App() {
             <p className="done-path">{outputPath}</p>
             <p className="done-hint">{exportMode === "zip" ? t.exportDoneZip : t.exportDoneFolder}</p>
             {autoCloseSeconds !== null && <p className="done-hint done-hint--countdown">{autoCloseHint}</p>}
-            <button className="btn-primary" onClick={() => void reset()}>{t.optimizeAnother}</button>
+            <div className="actions actions--center">
+              <button className="btn-primary" onClick={() => void openDetailedReport()}>{openReportLabel}</button>
+              <button className="btn-ghost" onClick={() => void reset()}>{t.optimizeAnother}</button>
+            </div>
           </div>
         )}
 
@@ -1624,89 +1966,20 @@ export default function App() {
                 </div>
               </div>
             </div>
-            <div className="report report--full batch-report">
-              <div className="report-list">
-                {batchResults.map((item, index) => (
-                  <button
-                    type="button"
-                    key={`${item.input}-${index}`}
-                    className={`report-item report-item--button ${item.success ? "" : "report-item--error"} ${activeBatchIndex === index ? "report-item--active" : ""}`}
-                    onClick={() => setActiveBatchIndex(index)}
-                  >
-                    <span className="report-file">{item.input}</span>
-                    <span className="report-meta">
-                      {item.success
-                        ? `${formatBytes(item.savedBytes ?? 0)} saved · ${item.converted ?? 0} converted · ${item.deleted ?? 0} deleted`
-                        : (item.error ?? "Error")}
-                    </span>
-                  </button>
-                ))}
+            <div className="report-shortcut-card report-shortcut-card--batch">
+              <div className="report-shortcut-copy">
+                <span className="report-shortcut-eyebrow">{reportSiteLabel}</span>
+                <h3 className="report-shortcut-title">{batchResults.length} {locale === "ru" ? "\u0441\u0430\u0439\u0442\u043e\u0432 \u0432 \u043e\u0442\u0447\u0435\u0442\u0435" : "sites in report"}</h3>
+                <p className="report-shortcut-text">{reportDetailHint}</p>
               </div>
+              <button className="btn-primary" onClick={() => void openDetailedReport()}>{openReportLabel}</button>
             </div>
-            {activeBatchItem && (
-              <div className="report report--full batch-report-detail">
-                <div className="report-tabs">
-                  {(["converted", "deleted", "errors"] as const).map((tab) => {
-                    const count = tab === "errors"
-                      ? (activeBatchItem.report?.filter((item) => item.type === "error").length ?? 0)
-                      : (activeBatchItem.report?.filter((item) => item.type === tab).length ?? 0);
-                    return (
-                      <button key={tab} className={`report-tab ${activeTab === tab ? "report-tab--active" : ""}`} onClick={() => setActiveTab(tab)}>
-                        {getTabLabel(tab)} <span className="tab-count">{count}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-
-                <div className="result-summary batch-summary batch-summary--detail">
-                  <div className="result-hero">
-                    <span className="result-hero-label">{t.saved}</span>
-                    <span className="result-hero-value">{formatBytes(activeBatchItem.savedBytes ?? 0)}</span>
-                  </div>
-                  <div className="result-stats">
-                    <div className="stat">
-                      <span className="stat-value stat-value--teal">{activeBatchItem.converted ?? 0}</span>
-                      <span className="stat-label">{t.compressed}</span>
-                    </div>
-                    <div className="stat-divider" />
-                    <div className="stat">
-                      <span className="stat-value stat-value--red">{activeBatchItem.deleted ?? 0}</span>
-                      <span className="stat-label">{t.deleted}</span>
-                    </div>
-                    <div className="stat-divider" />
-                    <div className="stat">
-                      <span className="stat-value">{activeBatchItem.replacedFiles ?? 0}</span>
-                      <span className="stat-label">{t.filesUpdated}</span>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="report-detail-header">
-                  <span className="report-detail-title">{locale === "ru" ? "Итог по сайту" : "Site summary"}</span>
-                  {renderDetailedSummary(activeBatchBreakdown)}
-                </div>
-
-                <div className="review-callout review-callout--compact">
-                  <div className="review-callout-body">
-                    <p className="review-callout-title">{activeBatchItem.input}</p>
-                    {activeBatchItem.output && <p className="review-callout-path">{activeBatchItem.output}</p>}
-                    {!activeBatchItem.success && activeBatchItem.error && (
-                      <p className="review-callout-hint">{activeBatchItem.error}</p>
-                    )}
-                  </div>
-                </div>
-
-                <div className="report-list">
-                  {activeBatchReport.map((item, index) => renderReportItem(item, `${activeBatchItem.input}-${activeTab}-${index}`))}
-                  {activeBatchReport.length === 0 && <div className="report-empty">{t.emptyTab}</div>}
-                </div>
-              </div>
-            )}
             {autoCloseSeconds !== null && <p className="done-hint done-hint--countdown">{autoCloseHint}</p>}
-            <button className="btn-primary" onClick={() => void reset()}>{t.optimizeAnother}</button>
+            <div className="actions actions--center">
+              <button className="btn-ghost" onClick={() => void reset()}>{t.optimizeAnother}</button>
+            </div>
           </div>
         )}
-
         {phase === "error" && (
           <div className="error-state">
             <div className="error-icon">⚠</div>
@@ -1720,6 +1993,75 @@ export default function App() {
               </div>
             )}
             <button className="btn-ghost" onClick={() => void reset()}>{t.tryAgain}</button>
+          </div>
+        )}
+        {isReportOpen && (phase === "reviewing" || phase === "done" || phase === "batchDone") && (
+          <div className="modal-backdrop" onClick={() => void closeDetailedReport()}>
+            <div className="modal-card modal-card--report" onClick={(event) => event.stopPropagation()}>
+              <div className="modal-head">
+                <h3>{reportTitle}</h3>
+                <button type="button" className="modal-close" onClick={() => void closeDetailedReport()}>×</button>
+              </div>
+
+              {phase === "reviewing" && result && renderReportInspector(result.report, result.referencedAssets ?? [], reviewBreakdown, reviewReferencedBreakdown, {
+                title: inputPath ?? (locale === "ru" ? "Текущий сайт" : "Current site"),
+                output: workDir ?? undefined,
+                savedBytes: result.savedBytes,
+                converted: result.converted,
+                deleted: result.deleted,
+                replacedFiles: result.replacedFiles
+              })}
+
+              {phase === "done" && result && renderReportInspector(result.report, result.referencedAssets ?? [], reviewBreakdown, reviewReferencedBreakdown, {
+                title: inputPath ?? (locale === "ru" ? "Текущий сайт" : "Current site"),
+                output: outputPath ?? undefined,
+                savedBytes: result.savedBytes,
+                converted: result.converted,
+                deleted: result.deleted,
+                replacedFiles: result.replacedFiles
+              })}
+
+              {phase === "batchDone" && (
+                <div className="report-modal-layout">
+                  <div className="report-modal-sites">
+                    <div className="report-detail-title">{reportSiteLabel}</div>
+                    <div className="report-list report-list--compact">
+                      {batchResults.map((item, index) => (
+                        <button
+                          type="button"
+                          key={`report-modal-${item.input}-${index}`}
+                          className={`report-item report-item--button ${item.success ? "" : "report-item--error"} ${activeBatchIndex === index ? "report-item--active" : ""}`}
+                          onClick={() => setActiveBatchIndex(index)}
+                        >
+                          <span className="report-file">{item.input}</span>
+                          <span className="report-meta">
+                            {item.success
+                              ? `${formatBytes(item.savedBytes ?? 0)} · ${item.converted ?? 0} / ${item.deleted ?? 0}`
+                              : (item.error ?? "Error")}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {activeBatchItem && renderReportInspector(activeBatchItem.report ?? [], activeBatchItem.referencedAssets ?? [], activeBatchBreakdown, activeBatchReferencedBreakdown, {
+                    title: activeBatchItem.input,
+                    output: activeBatchItem.output,
+                    hint: activeBatchItem.success ? undefined : activeBatchItem.error,
+                    savedBytes: activeBatchItem.savedBytes ?? 0,
+                    converted: activeBatchItem.converted ?? 0,
+                    deleted: activeBatchItem.deleted ?? 0,
+                    replacedFiles: activeBatchItem.replacedFiles
+                  })}
+                </div>
+              )}
+
+              <div className="modal-actions">
+                <button className="btn-primary" onClick={() => void closeDetailedReport()}>
+                  {reportCloseLabel}
+                </button>
+              </div>
+            </div>
           </div>
         )}
         {closePromptOpen && (
@@ -1852,3 +2194,6 @@ export default function App() {
     </div>
   );
 }
+
+
+
