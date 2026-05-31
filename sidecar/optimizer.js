@@ -103,6 +103,20 @@ function parseVideoActionOverrides(optionArgs = []) {
     }
 }
 
+function parseStrictBudgetMb(optionArgs = []) {
+    const index = optionArgs.indexOf("--strict-budget-mb");
+    if (index === -1 || !optionArgs[index + 1]) {
+        return null;
+    }
+
+    const value = Number(optionArgs[index + 1]);
+    if (!Number.isFinite(value) || value <= 0) {
+        return null;
+    }
+
+    return Math.min(2048, Math.max(1, Math.round(value)));
+}
+
 function targetExtForVideoAction(action) {
     if (action === "mp4" || action === "webm" || action === "gif") {
         return action;
@@ -398,6 +412,31 @@ const GIF_WEBP_PRESETS = [
     { quality: 56, effort: 6 }
 ];
 
+const STRICT_IMAGE_WEBP_PRESETS = [
+    { quality: 62, effort: 5 },
+    { quality: 52, effort: 5 },
+    { quality: 42, effort: 6 },
+    { quality: 34, effort: 6 },
+    { quality: 26, effort: 6 }
+];
+
+const STRICT_VIDEO_PRESETS = {
+    mp4: [
+        ["-vf", "scale='min(1280,iw)':-2:flags=lanczos", "-movflags", "+faststart", "-c:v", "libx264", "-preset", "slow", "-crf", "32", "-c:a", "aac", "-b:a", "96k"],
+        ["-vf", "scale='min(1280,iw)':-2:flags=lanczos", "-movflags", "+faststart", "-c:v", "libx264", "-preset", "slow", "-crf", "36", "-c:a", "aac", "-b:a", "64k"],
+        ["-vf", "scale='min(960,iw)':-2:flags=lanczos", "-movflags", "+faststart", "-c:v", "libx264", "-preset", "slow", "-crf", "40", "-c:a", "aac", "-b:a", "48k"]
+    ],
+    webm: [
+        ["-vf", "scale='min(1280,iw)':-2:flags=lanczos", "-c:v", "libvpx-vp9", "-crf", "40", "-b:v", "0", "-deadline", "good", "-cpu-used", "4", "-row-mt", "1", "-c:a", "libopus", "-b:a", "80k"],
+        ["-vf", "scale='min(960,iw)':-2:flags=lanczos", "-c:v", "libvpx-vp9", "-crf", "46", "-b:v", "0", "-deadline", "good", "-cpu-used", "5", "-row-mt", "1", "-c:a", "libopus", "-b:a", "64k"],
+        ["-vf", "scale='min(854,iw)':-2:flags=lanczos", "-c:v", "libvpx-vp9", "-crf", "50", "-b:v", "0", "-deadline", "good", "-cpu-used", "6", "-row-mt", "1", "-c:a", "libopus", "-b:a", "48k"]
+    ],
+    gif: [
+        ["-map", "0:v:0", "-vf", "fps=8,scale='min(720,iw)':-1:flags=lanczos", "-loop", "0"],
+        ["-map", "0:v:0", "-vf", "fps=6,scale='min(640,iw)':-1:flags=lanczos", "-loop", "0"]
+    ]
+};
+
 async function buildBestGifWebp(inputBuffer) {
     const variants = await Promise.all(
         GIF_WEBP_PRESETS.map(async preset => {
@@ -416,10 +455,23 @@ async function buildBestGifWebp(inputBuffer) {
     return variants.reduce((best, current) => current.size < best.size ? current : best);
 }
 
-async function optimizeVideo(filePath, targetExt) {
-    const extension = extname(filePath).toLowerCase();
-    const tempPath = filePath.replace(new RegExp(`${extension.replace(".", "\\.")}$`, "i"), `.optimized.${targetExt}`);
+function buildVideoCommandArgs(filePath, targetExt, codecArgs, outputPath) {
     const baseArgs = ["-y", "-i", filePath, "-map_metadata", "-1"];
+    const isGifTarget = targetExt === "gif";
+    return isGifTarget
+        ? [...baseArgs, ...codecArgs, outputPath]
+        : [...baseArgs, "-map", "0:v:0", "-map", "0:a?", ...codecArgs, outputPath];
+}
+
+async function transcodeVideoVariant(filePath, targetExt, codecArgs, label = "optimized") {
+    const extension = extname(filePath).toLowerCase();
+    const tempPath = filePath.replace(new RegExp(`${extension.replace(".", "\\.")}$`, "i"), `.${label}.${targetExt}`);
+    const args = buildVideoCommandArgs(filePath, targetExt, codecArgs, tempPath);
+    await runFfmpeg(args);
+    return tempPath;
+}
+
+async function optimizeVideo(filePath, targetExt) {
     let codecArgs;
 
     if (targetExt === "mp4") {
@@ -432,12 +484,54 @@ async function optimizeVideo(filePath, targetExt) {
         throw new Error(`Unsupported target video format: ${targetExt}`);
     }
 
-    const args = targetExt === "gif"
-        ? [...baseArgs, ...codecArgs, tempPath]
-        : [...baseArgs, "-map", "0:v:0", "-map", "0:a?", ...codecArgs, tempPath];
+    return transcodeVideoVariant(filePath, targetExt, codecArgs, "optimized");
+}
 
-    await runFfmpeg(args);
-    return tempPath;
+async function buildBestStrictImageVariant(filePath, inputBuffer) {
+    const variants = await Promise.all(
+        STRICT_IMAGE_WEBP_PRESETS.map(async preset => {
+            const buffer = await sharp(inputBuffer, { animated: true })
+                .webp(preset)
+                .toBuffer();
+            return {
+                buffer,
+                size: buffer.byteLength,
+                targetExt: "webp",
+                preset
+            };
+        })
+    );
+
+    return variants.reduce((best, current) => current.size < best.size ? current : best);
+}
+
+async function buildBestStrictVideoVariant(filePath, targetExt) {
+    const presets = STRICT_VIDEO_PRESETS[targetExt];
+    if (!presets || presets.length === 0) {
+        throw new Error(`Strict presets are not defined for ${targetExt}`);
+    }
+
+    const variants = [];
+    try {
+        for (let index = 0; index < presets.length; index++) {
+            const outputPath = await transcodeVideoVariant(filePath, targetExt, presets[index], `strict${index + 1}`);
+            const outputSize = (await stat(outputPath)).size;
+            variants.push({ outputPath, outputSize });
+        }
+    } catch (error) {
+        for (const variant of variants) {
+            await safeUnlink(variant.outputPath).catch(() => {});
+        }
+        throw error;
+    }
+
+    const best = variants.reduce((winner, current) => current.outputSize < winner.outputSize ? current : winner);
+    for (const variant of variants) {
+        if (variant.outputPath !== best.outputPath) {
+            await safeUnlink(variant.outputPath).catch(() => {});
+        }
+    }
+    return best;
 }
 
 function relativePath(workDir, filePath) {
@@ -488,6 +582,8 @@ async function cmdUnzip(zipPath, workDir) {
 async function cmdOptimize(workDir, optionArgs = []) {
     const removeUnused = optionArgs.includes("--remove-unused");
     const dedupeImages = optionArgs.includes("--dedupe-images");
+    const strictBudgetMb = parseStrictBudgetMb(optionArgs);
+    const strictBudgetBytes = strictBudgetMb ? Math.round(strictBudgetMb * 1024 * 1024) : null;
     const videoActionOverrides = parseVideoActionOverrides(optionArgs);
 
     emit({ type: "status", message: "Scanning files..." });
@@ -524,7 +620,7 @@ async function cmdOptimize(workDir, optionArgs = []) {
         });
     }
 
-    if (allConvertibleFiles.length === 0 && !removeUnused) {
+    if (allConvertibleFiles.length === 0 && !removeUnused && !strictBudgetBytes) {
         emit({ type: "done", converted: 0, deleted: 0, replacedFiles: 0, savedBytes: 0, report: [] });
         return;
     }
@@ -570,7 +666,7 @@ async function cmdOptimize(workDir, optionArgs = []) {
         ...videoPlans.filter(plan => plan.action !== "delete" && plan.targetExt)
     ];
 
-    if (toConvert.length === 0 && toDelete.length === 0 && !removeUnused) {
+    if (toConvert.length === 0 && toDelete.length === 0 && !removeUnused && !strictBudgetBytes) {
         emit({ type: "done", converted: 0, deleted: 0, replacedFiles: 0, savedBytes: 0, report: [] });
         return;
     }
@@ -778,6 +874,175 @@ async function cmdOptimize(workDir, optionArgs = []) {
                 originalSize: buffer.length,
                 message: `Дубликат объединен с ${original.rel}`
             });
+        }
+    }
+
+    if (strictBudgetBytes) {
+        emit({ type: "status", message: `Strict size mode enabled (target: ${strictBudgetMb} MB)` });
+        const maxStrictPasses = 3;
+
+        for (let pass = 1; pass <= maxStrictPasses; pass++) {
+            const strictFiles = await walkDir(workDir);
+            const strictMedia = [];
+            for (const filePath of strictFiles) {
+                const ext = extname(filePath).toLowerCase();
+                if (!MEDIA_EXTS.has(ext)) {
+                    continue;
+                }
+                try {
+                    const fileStat = await stat(filePath);
+                    strictMedia.push({ filePath, ext, size: fileStat.size });
+                } catch {
+                    // ignore transient files
+                }
+            }
+
+            if (strictMedia.length === 0) {
+                break;
+            }
+
+            let mediaTotalBytes = strictMedia.reduce((sum, item) => sum + item.size, 0);
+            if (mediaTotalBytes <= strictBudgetBytes) {
+                emit({
+                    type: "status",
+                    message: `Strict size target reached: ${(mediaTotalBytes / (1024 * 1024)).toFixed(2)} MB`
+                });
+                break;
+            }
+
+            emit({
+                type: "status",
+                message: `Strict pass ${pass}/${maxStrictPasses}: ${(mediaTotalBytes / (1024 * 1024)).toFixed(2)} MB -> ${strictBudgetMb} MB`
+            });
+
+            strictMedia.sort((a, b) => b.size - a.size);
+            const strictExistingTargets = new Set(strictMedia.map(item => normalizeRef(relativePath(workDir, item.filePath))));
+            const strictReservedTargets = new Set();
+            let passSavedBytes = 0;
+            let passChanges = 0;
+
+            for (const item of strictMedia) {
+                if ((mediaTotalBytes - passSavedBytes) <= strictBudgetBytes) {
+                    break;
+                }
+
+                const sourcePath = item.filePath;
+                const sourceExt = item.ext;
+                const sourceRel = relativePath(workDir, sourcePath);
+                const sourceFormat = sourceExt.replace(".", "").toUpperCase();
+
+                try {
+                    if (IMAGE_EXTS.has(sourceExt) || sourceExt === ".webp") {
+                        const inputBuffer = await readFile(sourcePath);
+                        const strictVariant = await buildBestStrictImageVariant(sourcePath, inputBuffer);
+                        const targetExt = strictVariant.targetExt;
+                        let outputPath = sourcePath;
+                        if (targetExt !== sourceExt.replace(".", "")) {
+                            const plannedOutput = planConvertedTarget(sourcePath, targetExt, workDir, strictExistingTargets, strictReservedTargets);
+                            if (!plannedOutput) {
+                                continue;
+                            }
+                            outputPath = plannedOutput;
+                        }
+                        const tempPath = outputPath === sourcePath
+                            ? `${sourcePath}.strict.tmp.webp`
+                            : `${outputPath}.strict.tmp.webp`;
+
+                        await writeFile(tempPath, strictVariant.buffer);
+                        const tempSize = (await stat(tempPath)).size;
+                        if (tempSize >= item.size) {
+                            await safeUnlink(tempPath).catch(() => {});
+                            continue;
+                        }
+
+                        await safeUnlink(sourcePath);
+                        await rename(tempPath, outputPath);
+
+                        const saved = item.size - tempSize;
+                        passSavedBytes += saved;
+                        savedBytes += saved;
+                        passChanges++;
+
+                        strictExistingTargets.delete(normalizeRef(sourceRel));
+                        strictExistingTargets.add(normalizeRef(relativePath(workDir, outputPath)));
+
+                        if (outputPath !== sourcePath) {
+                            exactRewrites.set(normalizeRef(sourceRel), relativePath(workDir, outputPath));
+                        }
+
+                        report.push({
+                            type: "converted",
+                            file: sourceRel,
+                            srcFormat: sourceFormat,
+                            originalSize: item.size,
+                            newSize: tempSize,
+                            saved,
+                            savedPercent: Math.round((saved / item.size) * 100),
+                            message: "Strict size pass"
+                        });
+                        continue;
+                    }
+
+                    if (VIDEO_EXTS.has(sourceExt)) {
+                        const targetExt = sourceExt === ".ogv" ? "webm" : sourceExt.replace(".", "");
+                        if (!STRICT_VIDEO_PRESETS[targetExt]) {
+                            continue;
+                        }
+
+                        let outputPath = sourcePath;
+                        if (targetExt !== sourceExt.replace(".", "")) {
+                            const plannedOutput = planConvertedTarget(sourcePath, targetExt, workDir, strictExistingTargets, strictReservedTargets);
+                            if (!plannedOutput) {
+                                continue;
+                            }
+                            outputPath = plannedOutput;
+                        }
+                        const strictVariant = await buildBestStrictVideoVariant(sourcePath, targetExt);
+
+                        if (strictVariant.outputSize >= item.size) {
+                            await safeUnlink(strictVariant.outputPath).catch(() => {});
+                            continue;
+                        }
+
+                        await safeUnlink(sourcePath);
+                        await rename(strictVariant.outputPath, outputPath);
+
+                        const saved = item.size - strictVariant.outputSize;
+                        passSavedBytes += saved;
+                        savedBytes += saved;
+                        passChanges++;
+
+                        strictExistingTargets.delete(normalizeRef(sourceRel));
+                        strictExistingTargets.add(normalizeRef(relativePath(workDir, outputPath)));
+
+                        if (outputPath !== sourcePath) {
+                            exactRewrites.set(normalizeRef(sourceRel), relativePath(workDir, outputPath));
+                        }
+
+                        report.push({
+                            type: "converted",
+                            file: sourceRel,
+                            srcFormat: sourceFormat,
+                            originalSize: item.size,
+                            newSize: strictVariant.outputSize,
+                            saved,
+                            savedPercent: Math.round((saved / item.size) * 100),
+                            message: "Strict size pass"
+                        });
+                    }
+                } catch (err) {
+                    report.push({
+                        type: "error",
+                        file: sourceRel,
+                        message: toRussianError(err.message)
+                    });
+                }
+            }
+
+            if (passChanges === 0) {
+                emit({ type: "status", message: "Strict pass finished: no more safe reductions found." });
+                break;
+            }
         }
     }
 

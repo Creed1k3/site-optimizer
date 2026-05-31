@@ -764,6 +764,7 @@ async fn optimize_site(
     work_dir: String,
     remove_unused: bool,
     dedupe_images: bool,
+    strict_limit_mb: Option<f64>,
     video_actions: Option<Vec<VideoActionRule>>,
 ) -> Result<(), String> {
     let wd = work_dir.clone();
@@ -774,6 +775,10 @@ async fn optimize_site(
         }
         if dedupe_images {
             args.push("--dedupe-images".into());
+        }
+        if let Some(limit) = strict_limit_mb.filter(|value| value.is_finite() && *value > 0.0) {
+            args.push("--strict-budget-mb".into());
+            args.push(limit.to_string());
         }
         if let Some(actions) = video_actions.filter(|items| !items.is_empty()) {
             args.push("--video-actions-json".into());

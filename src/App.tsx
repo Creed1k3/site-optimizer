@@ -444,6 +444,16 @@ export default function App() {
     if (typeof window === "undefined") return false;
     return window.localStorage.getItem("site-optimizer-dedupe-images") === "true";
   });
+  const [strictBudgetEnabled, setStrictBudgetEnabled] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false;
+    return window.localStorage.getItem("site-optimizer-strict-budget-enabled") === "true";
+  });
+  const [strictBudgetMb, setStrictBudgetMb] = useState<number>(() => {
+    if (typeof window === "undefined") return 20;
+    const saved = Number(window.localStorage.getItem("site-optimizer-strict-budget-mb") ?? "20");
+    if (!Number.isFinite(saved) || saved <= 0) return 20;
+    return Math.min(2048, Math.max(1, Math.round(saved)));
+  });
   const [runtimeDebug, setRuntimeDebug] = useState<string[]>([]);
   const [batchResults, setBatchResults] = useState<BatchSummaryItem[]>([]);
   const [activeBatchIndex, setActiveBatchIndex] = useState(0);
@@ -597,6 +607,13 @@ export default function App() {
   useEffect(() => {
     window.localStorage.setItem("site-optimizer-dedupe-images", String(dedupeImages));
   }, [dedupeImages]);
+  useEffect(() => {
+    window.localStorage.setItem("site-optimizer-strict-budget-enabled", String(strictBudgetEnabled));
+  }, [strictBudgetEnabled]);
+  useEffect(() => {
+    const normalized = Number.isFinite(strictBudgetMb) ? Math.min(2048, Math.max(1, Math.round(strictBudgetMb))) : 20;
+    window.localStorage.setItem("site-optimizer-strict-budget-mb", String(normalized));
+  }, [strictBudgetMb]);
 
   useEffect(() => {
     batchPausedRef.current = batchPaused;
@@ -795,6 +812,14 @@ export default function App() {
   const dedupeHint = locale === "ru"
     ? "\u0414\u0443\u0431\u043b\u0438\u043a\u0430\u0442\u044b \u0438\u0449\u0443\u0442\u0441\u044f \u043f\u043e \u0441\u043e\u0434\u0435\u0440\u0436\u0438\u043c\u043e\u043c\u0443 \u0444\u0430\u0439\u043b\u0430 \u0438 \u043e\u0431\u044a\u0435\u0434\u0438\u043d\u044f\u044e\u0442\u0441\u044f \u0432 \u043e\u0434\u0438\u043d \u043e\u0440\u0438\u0433\u0438\u043d\u0430\u043b."
     : "Duplicates are detected by file content and merged into a single original.";
+  const strictBudgetLabel = locale === "ru"
+    ? "\u041f\u0440\u0438\u043c\u0435\u043d\u0438\u0442\u044c \u0441\u0442\u0440\u043e\u0433\u0438\u0435 \u043e\u0433\u0440\u0430\u043d\u0438\u0447\u0435\u043d\u0438\u044f \u043f\u043e \u0432\u0435\u0441\u0443"
+    : "Apply strict size limits";
+  const strictBudgetHint = locale === "ru"
+    ? "\u0415\u0441\u043b\u0438 \u043f\u0430\u043a\u0435\u0442 \u043c\u0435\u0434\u0438\u0430 \u0432\u044b\u0448\u0435 \u043b\u0438\u043c\u0438\u0442\u0430, \u043f\u0440\u0438\u043b\u043e\u0436\u0435\u043d\u0438\u0435 \u0437\u0430\u043f\u0443\u0441\u0442\u0438\u0442 \u0434\u043e\u043f. \u0430\u0433\u0440\u0435\u0441\u0441\u0438\u0432\u043d\u0443\u044e \u043e\u043f\u0442\u0438\u043c\u0438\u0437\u0430\u0446\u0438\u044e \u0438\u0437\u043e\u0431\u0440\u0430\u0436\u0435\u043d\u0438\u0439 \u0438 \u0432\u0438\u0434\u0435\u043e."
+    : "If media total is above the limit, extra aggressive image/video compression will be applied.";
+  const strictBudgetInputLabel = locale === "ru" ? "\u041b\u0438\u043c\u0438\u0442 (MB)" : "Limit (MB)";
+  const strictBudgetMbSafe = Number.isFinite(strictBudgetMb) ? Math.min(2048, Math.max(1, Math.round(strictBudgetMb))) : 20;
   const quickOptimizeLabel = locale === "ru" ? "\u0411\u044b\u0441\u0442\u0440\u043e \u043e\u043f\u0442\u0438\u043c\u0438\u0437\u0438\u0440\u043e\u0432\u0430\u0442\u044c \u043f\u0430\u0447\u043a\u0443" : "Quick optimize batch";
   const quickSummaryTitle = locale === "ru" ? "\u041f\u0430\u043a\u0435\u0442\u043d\u0430\u044f \u043e\u043f\u0442\u0438\u043c\u0438\u0437\u0430\u0446\u0438\u044f \u0437\u0430\u0432\u0435\u0440\u0448\u0435\u043d\u0430" : "Batch optimization complete";
   const quickSummaryHint = locale === "ru"
@@ -904,7 +929,8 @@ export default function App() {
     await invoke("optimize_site", {
       workDir: dir,
       removeUnused,
-      dedupeImages
+      dedupeImages,
+      strictLimitMb: strictBudgetEnabled ? strictBudgetMbSafe : null
     });
     const donePayload = await donePromise;
 
@@ -954,7 +980,8 @@ export default function App() {
       await invoke("optimize_site", {
         workDir: dir,
         removeUnused,
-        dedupeImages
+        dedupeImages,
+        strictLimitMb: strictBudgetEnabled ? strictBudgetMbSafe : null
       });
 
       if (stopRequestedRef.current) {
@@ -1074,7 +1101,8 @@ export default function App() {
       await invoke("optimize_site", {
         workDir: dir,
         removeUnused,
-        dedupeImages
+        dedupeImages,
+        strictLimitMb: strictBudgetEnabled ? strictBudgetMbSafe : null
       });
     } catch (error: any) {
       setErrorMsg(String(error));
@@ -1757,6 +1785,37 @@ export default function App() {
                   <span className="option-hint">{dedupeHint}</span>
                 </span>
               </label>
+
+              <label className="option-row">
+                <input
+                  type="checkbox"
+                  checked={strictBudgetEnabled}
+                  onChange={(event) => setStrictBudgetEnabled(event.target.checked)}
+                />
+                <span className="option-copy">
+                  <span className="option-label">{strictBudgetLabel}</span>
+                  <span className="option-hint">{strictBudgetHint}</span>
+                </span>
+              </label>
+
+              {strictBudgetEnabled && (
+                <div className="option-inline">
+                  <span className="option-inline-label">{strictBudgetInputLabel}</span>
+                  <input
+                    className="option-inline-input"
+                    type="number"
+                    min={1}
+                    max={2048}
+                    step={1}
+                    value={strictBudgetMbSafe}
+                    onChange={(event) => {
+                      const next = Number(event.target.value);
+                      if (!Number.isFinite(next)) return;
+                      setStrictBudgetMb(Math.min(2048, Math.max(1, Math.round(next))));
+                    }}
+                  />
+                </div>
+              )}
             </div>
 
             <div className="actions">
