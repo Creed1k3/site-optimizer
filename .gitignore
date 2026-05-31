@@ -10,3 +10,6 @@ Thumbs.db
 *_optimizer_work/
 *_optimized/
 src-tauri/signing/
+tmp-*/
+release/
+*.bak
