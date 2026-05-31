@@ -705,6 +705,7 @@ async function cmdOptimize(workDir, optionArgs = []) {
                 savedBytes += originalSize;
                 report.push({
                     type: "deleted",
+                    reason: "existing-webp",
                     file: rel,
                     srcFormat: fileExt.slice(1).toUpperCase(),
                     originalSize,
@@ -726,6 +727,7 @@ async function cmdOptimize(workDir, optionArgs = []) {
                     await safeUnlink(optimizedTemp);
                     report.push({
                         type: "error",
+                        reason: "larger-than-source",
                         file: rel,
                         message: `Пропущено: результат больше исходного (${originalSize} -> ${newSize} байт)`
                     });
@@ -745,6 +747,7 @@ async function cmdOptimize(workDir, optionArgs = []) {
 
                 report.push({
                     type: "converted",
+                    reason: "optimized",
                     file: rel,
                     srcFormat: plan.targetExt.toUpperCase(),
                     originalSize,
@@ -774,6 +777,7 @@ async function cmdOptimize(workDir, optionArgs = []) {
                 await safeUnlink(out);
                 report.push({
                     type: "error",
+                    reason: "larger-than-source",
                     file: rel,
                     message: `Пропущено: результат больше исходного (${originalSize} -> ${newSize} байт)`
                 });
@@ -789,6 +793,7 @@ async function cmdOptimize(workDir, optionArgs = []) {
             exactRewrites.set(normalizeRef(rel), relWebp);
             report.push({
                 type: "converted",
+                reason: "optimized",
                 file: rel,
                 srcFormat: isPng(mediaPath) ? "PNG" : isGif(mediaPath) ? "GIF" : "JPG",
                 originalSize,
@@ -797,7 +802,7 @@ async function cmdOptimize(workDir, optionArgs = []) {
                 savedPercent: Math.round((saved / originalSize) * 100)
             });
         } catch (err) {
-            report.push({ type: "error", file: rel, message: toRussianError(err.message) });
+            report.push({ type: "error", reason: "error", file: rel, message: toRussianError(err.message) });
         }
         done++;
         emit({ type: "progress", done, total, percent: total ? Math.round((done / total) * 100) : 100, file: rel });
@@ -811,13 +816,14 @@ async function cmdOptimize(workDir, optionArgs = []) {
             savedBytes += originalSize;
             report.push({
                 type: "deleted",
+                reason: "manual",
                 file: rel,
                 srcFormat: extname(plan.filePath).slice(1).toUpperCase(),
                 originalSize,
                 message: "Удалено по выбору пользователя"
             });
         } catch (err) {
-            report.push({ type: "error", file: rel, message: toRussianError(err.message) });
+            report.push({ type: "error", reason: "error", file: rel, message: toRussianError(err.message) });
         }
         done++;
         emit({ type: "progress", done, total, percent: total ? Math.round((done / total) * 100) : 100, file: rel });
@@ -844,6 +850,7 @@ async function cmdOptimize(workDir, optionArgs = []) {
             exactRewrites.set(normalizeRef(rel), original.rel);
             report.push({
                 type: "deleted",
+                reason: "duplicate",
                 file: rel,
                 srcFormat: extname(imgPath).slice(1).toUpperCase(),
                 originalSize: buffer.length,
@@ -947,6 +954,7 @@ async function cmdOptimize(workDir, optionArgs = []) {
 
                         report.push({
                             type: "converted",
+                            reason: "optimized",
                             file: sourceRel,
                             srcFormat: sourceFormat,
                             originalSize: item.size,
@@ -996,6 +1004,7 @@ async function cmdOptimize(workDir, optionArgs = []) {
 
                         report.push({
                             type: "converted",
+                            reason: "optimized",
                             file: sourceRel,
                             srcFormat: sourceFormat,
                             originalSize: item.size,
@@ -1008,6 +1017,7 @@ async function cmdOptimize(workDir, optionArgs = []) {
                 } catch (err) {
                     report.push({
                         type: "error",
+                        reason: "error",
                         file: sourceRel,
                         message: toRussianError(err.message)
                     });
@@ -1050,6 +1060,7 @@ async function cmdOptimize(workDir, optionArgs = []) {
             for (const { rawPath, reason } of skippedRefs.values()) {
                 report.push({
                     type: "error",
+                    reason: /динамич/i.test(reason) ? "dynamic" : "skipped",
                     file: relCodeFile,
                     message: `${reason}: ${rawPath}`
                 });
@@ -1077,6 +1088,7 @@ async function cmdOptimize(workDir, optionArgs = []) {
             await safeUnlink(assetPath);
             report.push({
                 type: "deleted",
+                reason: "unused",
                 file: rel,
                 srcFormat: extname(assetPath).slice(1).toUpperCase(),
                 originalSize,

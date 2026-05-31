@@ -9,8 +9,21 @@ type Phase = "idle" | "preparing" | "running" | "reviewing" | "exporting" | "don
 type ReportTab = "assets" | "converted" | "deleted" | "errors";
 type Locale = "ru" | "en";
 
+type ReportReason =
+  | "optimized"
+  | "existing-webp"
+  | "unused"
+  | "duplicate"
+  | "manual"
+  | "dynamic"
+  | "skipped"
+  | "larger-than-source"
+  | "ffmpeg-missing"
+  | "error";
+
 interface ReportItem {
   type: "converted" | "deleted" | "error";
+  reason?: ReportReason;
   file: string;
   srcFormat?: string;
   originalSize?: number;
@@ -260,101 +273,69 @@ interface ReferencedAssetBreakdown {
 }
 
 function getReportReasonInfo(item: ReportItem, locale: Locale): ReportReasonInfo {
-  const message = (item.message ?? "").toLowerCase();
+  // Prefer the machine-readable reason emitted by the sidecar; fall back to the
+  // record type only for forward-compatibility with older payloads.
+  const reason: ReportReason = item.reason
+    ?? (item.type === "converted" ? "optimized" : item.type === "deleted" ? "manual" : "error");
 
-  if (item.type === "converted") {
-    return {
-      label: locale === "ru" ? "Оптимизировано" : "Optimized",
-      tone: "good"
-    };
+  switch (reason) {
+    case "optimized":
+      return { label: locale === "ru" ? "Оптимизировано" : "Optimized", tone: "good" };
+    case "existing-webp":
+      return { label: locale === "ru" ? "Готовый WEBP" : "Existing WEBP", tone: "warn" };
+    case "unused":
+      return { label: locale === "ru" ? "Не используется" : "Unused", tone: "warn" };
+    case "duplicate":
+      return { label: locale === "ru" ? "Дубликат" : "Duplicate", tone: "warn" };
+    case "manual":
+      return { label: locale === "ru" ? "Удалено вручную" : "Manual delete", tone: "warn" };
+    case "dynamic":
+      return { label: locale === "ru" ? "Динамическая ссылка" : "Dynamic link", tone: "danger" };
+    case "skipped":
+      return { label: locale === "ru" ? "Пропущено" : "Skipped", tone: "warn" };
+    case "larger-than-source":
+      return { label: locale === "ru" ? "Больше оригинала" : "Larger than source", tone: "warn" };
+    case "ffmpeg-missing":
+      return { label: locale === "ru" ? "ffmpeg не найден" : "ffmpeg missing", tone: "danger" };
+    default:
+      return { label: locale === "ru" ? "Ошибка" : "Error", tone: "danger" };
   }
-
-  if (item.type === "deleted") {
-    if (message.includes("готовый webp") || message.includes("existing webp")) {
-      return {
-        label: locale === "ru" ? "Готовый WEBP" : "Existing WEBP",
-        tone: "warn"
-      };
-    }
-
-    if (message.includes("не используется") || message.includes("unused")) {
-      return {
-        label: locale === "ru" ? "Не используется" : "Unused",
-        tone: "warn"
-      };
-    }
-
-    if (message.includes("дубликат") || message.includes("duplicate")) {
-      return {
-        label: locale === "ru" ? "Дубликат" : "Duplicate",
-        tone: "warn"
-      };
-    }
-
-    if (message.includes("вручную") || message.includes("manual") || message.includes("user")) {
-      return {
-        label: locale === "ru" ? "Удалено вручную" : "Manual delete",
-        tone: "warn"
-      };
-    }
-
-    return {
-      label: locale === "ru" ? "Удалено" : "Deleted",
-      tone: "warn"
-    };
-  }
-
-  if (message.includes("динамичес") || message.includes("dynamic")) {
-    return {
-      label: locale === "ru" ? "Динамическая ссылка" : "Dynamic link",
-      tone: "danger"
-    };
-  }
-
-  if (message.includes("пропущ") || message.includes("skipped")) {
-    return {
-      label: locale === "ru" ? "Пропущено" : "Skipped",
-      tone: "warn"
-    };
-  }
-
-  return {
-    label: locale === "ru" ? "Ошибка" : "Error",
-    tone: "danger"
-  };
 }
 
 function getReportBreakdown(report: ReportItem[]): ReportBreakdown {
   return report.reduce<ReportBreakdown>((summary, item) => {
-    const message = (item.message ?? "").toLowerCase();
+    const reason: ReportReason = item.reason
+      ?? (item.type === "converted" ? "optimized" : item.type === "deleted" ? "manual" : "error");
 
-    if (item.type === "converted") {
-      summary.converted += 1;
-      return summary;
-    }
-
-    if (item.type === "deleted") {
-      summary.deleted += 1;
-      if (message.includes("готовый webp") || message.includes("existing webp")) {
+    switch (reason) {
+      case "optimized":
+        summary.converted += 1;
+        break;
+      case "existing-webp":
+        summary.deleted += 1;
         summary.duplicates += 1;
-      } else if (message.includes("не используется") || message.includes("unused")) {
+        break;
+      case "duplicate":
+        summary.deleted += 1;
+        summary.duplicates += 1;
+        break;
+      case "unused":
+        summary.deleted += 1;
         summary.unused += 1;
-      } else if (message.includes("дубликат") || message.includes("duplicate")) {
-        summary.duplicates += 1;
-      } else if (message.includes("вручную") || message.includes("manual") || message.includes("user")) {
+        break;
+      case "manual":
+        summary.deleted += 1;
         summary.manual += 1;
-      }
-      return summary;
-    }
-
-    if (message.includes("динамичес") || message.includes("dynamic")) {
-      summary.dynamic += 1;
-    }
-
-    if (message.includes("пропущ") || message.includes("skipped")) {
-      summary.skipped += 1;
-    } else {
-      summary.errors += 1;
+        break;
+      case "dynamic":
+        summary.dynamic += 1;
+        break;
+      case "skipped":
+      case "larger-than-source":
+        summary.skipped += 1;
+        break;
+      default:
+        summary.errors += 1;
     }
 
     return summary;
