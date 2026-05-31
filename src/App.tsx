@@ -472,6 +472,7 @@ export default function App() {
   const floatCounter = useRef(0);
   const languageSwitcherRef = useRef<HTMLDivElement | null>(null);
   const batchPausedRef = useRef(false);
+  const phaseRef = useRef<Phase>(phase);
   const stopRequestedRef = useRef(false);
   const autoCloseCancelArmedRef = useRef(false);
   const autoCloseDelayRef = useRef(10);
@@ -620,6 +621,10 @@ export default function App() {
   }, [batchPaused]);
 
   useEffect(() => {
+    phaseRef.current = phase;
+  }, [phase]);
+
+  useEffect(() => {
     void setActivityState(phase === "preparing" || phase === "running" || phase === "exporting" || phase === "batching");
   }, [phase, setActivityState]);
 
@@ -715,14 +720,15 @@ export default function App() {
       });
 
       unlistenCloseRequested = await listen("window_close_requested", () => {
-        const busy = phase === "preparing" || phase === "running" || phase === "exporting" || phase === "batching";
+        const activePhase = phaseRef.current;
+        const busy = activePhase === "preparing" || activePhase === "running" || activePhase === "exporting" || activePhase === "batching";
 
         if (!busy) {
           void quitApp();
           return;
         }
 
-        if (phase === "batching") {
+        if (activePhase === "batching") {
           setBatchPaused(true);
         }
         setClosePromptOpen(true);
@@ -739,7 +745,12 @@ export default function App() {
       unlistenCloseRequested?.();
       unlistenUpdateProgress?.();
     };
-  }, [checkForUpdates, hideMainWindow, phase, quitApp, showMainWindow]);
+    // Register launch/close/update listeners and run startup detection once on
+    // mount. `phase` is intentionally excluded: the close handler reads the
+    // live value via phaseRef, so this effect must not re-run (and re-subscribe
+    // / re-run startup quick-launch) on every phase change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [checkForUpdates, hideMainWindow, quitApp, showMainWindow]);
 
   useEffect(() => {
     const handlePointerDown = (event: MouseEvent) => {

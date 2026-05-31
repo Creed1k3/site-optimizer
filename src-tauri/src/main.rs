@@ -56,19 +56,6 @@ struct ContextMenuSettings {
     quick: bool,
 }
 
-#[derive(Clone, serde::Serialize)]
-struct VideoFileInfo {
-    path: String,
-    format: String,
-    size: u64,
-}
-
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
-struct VideoActionRule {
-    path: String,
-    action: String,
-}
-
 fn normalize_path_for_node(path: &Path) -> OsString {
     let path_str = path.to_string_lossy();
     let normalized = path_str.strip_prefix(r"\\?\").unwrap_or(&path_str);
@@ -572,13 +559,10 @@ fn run_sidecar(app: AppHandle, args: Vec<String>) -> Result<(), String> {
     let stdout = child.stdout.take().ok_or("No stdout")?;
     let stderr = child.stderr.take().ok_or("No stderr")?;
 
-    for line in BufReader::new(stdout).lines() {
-        let line = line.map_err(|e| e.to_string())?;
-        if !line.trim().is_empty() {
-            app.emit("optimizer_event", line).ok();
-        }
-    }
-
+    // Drain stderr on a dedicated thread *before* reading stdout. The child can
+    // write to both pipes concurrently; if we only read stdout here and let
+    // stderr fill its pipe buffer, the child blocks on the stderr write, stops
+    // producing stdout, and this loop hangs forever (classic pipe deadlock).
     let stderr_output = std::thread::spawn(move || -> Result<String, String> {
         let mut collected = Vec::new();
         for line in BufReader::new(stderr).lines() {
@@ -589,6 +573,13 @@ fn run_sidecar(app: AppHandle, args: Vec<String>) -> Result<(), String> {
         }
         Ok(collected.join("\n"))
     });
+
+    for line in BufReader::new(stdout).lines() {
+        let line = line.map_err(|e| e.to_string())?;
+        if !line.trim().is_empty() {
+            app.emit("optimizer_event", line).ok();
+        }
+    }
 
     let status = child.wait().map_err(|e| e.to_string())?;
     if let Some(state) = app.try_state::<AppState>() {
@@ -705,59 +696,6 @@ fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-fn collect_videos_recursive(root: &Path, dir: &Path, out: &mut Vec<VideoFileInfo>) -> std::io::Result<()> {
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        let name = entry.file_name();
-
-        if entry.file_type()?.is_dir() {
-            if ["node_modules", ".git", ".trash"].contains(&name.to_string_lossy().as_ref()) {
-                continue;
-            }
-            collect_videos_recursive(root, &path, out)?;
-            continue;
-        }
-
-        let ext = path
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .map(|ext| ext.to_ascii_lowercase());
-
-        let Some(ext) = ext else {
-            continue;
-        };
-
-        if !matches!(ext.as_str(), "mp4" | "ogv" | "webm") {
-            continue;
-        }
-
-        let meta = entry.metadata()?;
-        let rel = path
-            .strip_prefix(root)
-            .unwrap_or(&path)
-            .to_string_lossy()
-            .replace('\\', "/");
-
-        out.push(VideoFileInfo {
-            path: rel,
-            format: ext.to_uppercase(),
-            size: meta.len(),
-        });
-    }
-
-    Ok(())
-}
-
-#[tauri::command]
-async fn list_videos(work_dir: String) -> Result<Vec<VideoFileInfo>, String> {
-    let root = PathBuf::from(work_dir);
-    let mut items = Vec::new();
-    collect_videos_recursive(&root, &root, &mut items).map_err(|e| e.to_string())?;
-    items.sort_by(|a, b| a.path.cmp(&b.path));
-    Ok(items)
-}
-
 #[tauri::command]
 async fn optimize_site(
     app: AppHandle,
@@ -765,7 +703,6 @@ async fn optimize_site(
     remove_unused: bool,
     dedupe_images: bool,
     strict_limit_mb: Option<f64>,
-    video_actions: Option<Vec<VideoActionRule>>,
 ) -> Result<(), String> {
     let wd = work_dir.clone();
     tokio::task::spawn_blocking(move || {
@@ -779,10 +716,6 @@ async fn optimize_site(
         if let Some(limit) = strict_limit_mb.filter(|value| value.is_finite() && *value > 0.0) {
             args.push("--strict-budget-mb".into());
             args.push(limit.to_string());
-        }
-        if let Some(actions) = video_actions.filter(|items| !items.is_empty()) {
-            args.push("--video-actions-json".into());
-            args.push(serde_json::to_string(&actions).map_err(|e| e.to_string())?);
         }
         run_sidecar(app, args)
     }).await.map_err(|e| e.to_string())?
@@ -934,7 +867,6 @@ fn main() {
             open_folder_dialog_multi,
             unzip_site,
             prepare_folder,
-            list_videos,
             optimize_site,
             export_as_zip,
             export_as_folder,

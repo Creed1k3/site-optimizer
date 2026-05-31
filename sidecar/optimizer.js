@@ -81,28 +81,6 @@ function defaultVideoAction(filePath) {
     return "keep";
 }
 
-function parseVideoActionOverrides(optionArgs = []) {
-    const index = optionArgs.indexOf("--video-actions-json");
-    if (index === -1 || !optionArgs[index + 1]) {
-        return new Map();
-    }
-
-    try {
-        const parsed = JSON.parse(optionArgs[index + 1]);
-        if (!Array.isArray(parsed)) {
-            return new Map();
-        }
-
-        return new Map(
-            parsed
-                .filter(item => item && typeof item.path === "string" && typeof item.action === "string")
-                .map(item => [normalizeRef(item.path), String(item.action).toLowerCase()])
-        );
-    } catch {
-        return new Map();
-    }
-}
-
 function parseStrictBudgetMb(optionArgs = []) {
     const index = optionArgs.indexOf("--strict-budget-mb");
     if (index === -1 || !optionArgs[index + 1]) {
@@ -584,7 +562,6 @@ async function cmdOptimize(workDir, optionArgs = []) {
     const dedupeImages = optionArgs.includes("--dedupe-images");
     const strictBudgetMb = parseStrictBudgetMb(optionArgs);
     const strictBudgetBytes = strictBudgetMb ? Math.round(strictBudgetMb * 1024 * 1024) : null;
-    const videoActionOverrides = parseVideoActionOverrides(optionArgs);
 
     emit({ type: "status", message: "Scanning files..." });
 
@@ -648,14 +625,12 @@ async function cmdOptimize(workDir, optionArgs = []) {
     }));
     const videoPlans = usedVideoFiles
         .map(filePath => {
-            const relativeFilePath = relativePath(workDir, filePath);
-            const overrideAction = videoActionOverrides.get(normalizeRef(relativeFilePath));
-            const action = overrideAction ?? defaultVideoAction(filePath);
+            const action = defaultVideoAction(filePath);
             return {
                 kind: "video",
                 filePath,
                 action,
-                explicit: overrideAction != null,
+                explicit: false,
                 targetExt: targetExtForVideoAction(action)
             };
         })
