@@ -6,6 +6,7 @@ import { join, extname, relative, basename, dirname, resolve, isAbsolute } from 
 import { createRequire } from "module";
 import { createHash } from "crypto";
 import { spawn } from "child_process";
+import { cpus } from "os";
 
 const require = createRequire(import.meta.url);
 
@@ -49,13 +50,13 @@ const CODE_EXTS = new Set([
 ]);
 const IMAGE_EXTS = new Set([".png", ".jpg", ".jpeg", ".gif"]);
 const VIDEO_EXTS = new Set([".mp4", ".ogv", ".webm"]);
-const MEDIA_EXTS = new Set([...IMAGE_EXTS, ...VIDEO_EXTS, ".webp"]);
+const MEDIA_EXTS = new Set([...IMAGE_EXTS, ...VIDEO_EXTS, ".webp", ".avif"]);
 const FONT_EXTS = new Set([".woff", ".woff2", ".ttf", ".otf", ".eot"]);
 const SCRIPT_ASSET_EXTS = new Set([".js", ".mjs", ".cjs"]);
 const STYLE_ASSET_EXTS = new Set([".css"]);
 const REMOVABLE_ASSET_EXTS = new Set([...MEDIA_EXTS, ...FONT_EXTS, ...SCRIPT_ASSET_EXTS, ...STYLE_ASSET_EXTS]);
 const CONVERTIBLE_EXTS = new Set([".png", ".jpg", ".jpeg", ".gif"]);
-const ASSET_REF_RE = /(?:src|href|poster|content|data-src|data-original|data-image|data-lazy-src|srcset|imagesrcset|data-srcset)\s*=\s*["']([^"']+\.(?:png|jpe?g|gif|webp|mp4|ogv|webm|woff2?|ttf|otf|eot|css|m?js|cjs)(?:[?#][^"']*)?)["']|url\(\s*['"]?([^'")]+\.(?:png|jpe?g|gif|webp|mp4|ogv|webm|woff2?|ttf|otf|eot|css|m?js|cjs)(?:[?#][^'")]+)?)['"]?\s*\)|(?:["'`(\s=:/\\,]|^)([^"'`\s),]+?\.(?:png|jpe?g|gif|webp|mp4|ogv|webm|woff2?|ttf|otf|eot|css|m?js|cjs)(?:[?#][^"'`\s),]*)?)/gi;
+const ASSET_REF_RE = /(?:src|href|poster|content|data-src|data-original|data-image|data-lazy-src|srcset|imagesrcset|data-srcset)\s*=\s*["']([^"']+\.(?:png|jpe?g|gif|webp|avif|mp4|ogv|webm|woff2?|ttf|otf|eot|css|m?js|cjs)(?:[?#][^"']*)?)["']|url\(\s*['"]?([^'")]+\.(?:png|jpe?g|gif|webp|avif|mp4|ogv|webm|woff2?|ttf|otf|eot|css|m?js|cjs)(?:[?#][^'")]+)?)['"]?\s*\)|(?:["'`(\s=:/\\,]|^)([^"'`\s),]+?\.(?:png|jpe?g|gif|webp|avif|mp4|ogv|webm|woff2?|ttf|otf|eot|css|m?js|cjs)(?:[?#][^"'`\s),]*)?)/gi;
 
 const isPng = filePath => extname(filePath).toLowerCase() === ".png";
 const isJpg = filePath => [".jpg", ".jpeg"].includes(extname(filePath).toLowerCase());
@@ -161,6 +162,24 @@ function collectReferencedAssets(content, codeFile, workDir, onSkip) {
     return { exactRefs, unresolvedNames };
 }
 
+// Run `worker` over `items` with at most `limit` tasks in flight at once. The
+// event loop is single-threaded, so shared accumulators mutated inside the
+// worker (report, savedBytes, exactRewrites, done) stay consistent — each
+// mutation statement runs to completion without interleaving. Bounding the
+// concurrency keeps native sharp/ffmpeg work from oversubscribing the CPU.
+async function runPool(items, limit, worker) {
+    if (items.length === 0) return;
+    const effectiveLimit = Math.max(1, Math.min(limit, items.length));
+    let cursor = 0;
+    const runners = Array.from({ length: effectiveLimit }, async () => {
+        while (cursor < items.length) {
+            const index = cursor++;
+            await worker(items[index], index);
+        }
+    });
+    await Promise.all(runners);
+}
+
 async function walkDir(dir) {
     const entries = await readdir(dir, { withFileTypes: true });
     const files = [];
@@ -249,7 +268,7 @@ function collectExactReferencedAssets(codeEntries, workDir) {
 
 function assetKindFromPath(filePath) {
     const ext = extname(filePath).toLowerCase();
-    if (IMAGE_EXTS.has(ext) || ext === ".webp") return "image";
+    if (IMAGE_EXTS.has(ext) || ext === ".webp" || ext === ".avif") return "image";
     if (VIDEO_EXTS.has(ext)) return "video";
     if (FONT_EXTS.has(ext)) return "font";
     if (SCRIPT_ASSET_EXTS.has(ext)) return "script";
@@ -282,7 +301,7 @@ function replaceImageRefs(content, codeFile, workDir, exactRewrites, onSkip) {
     };
 
     let updated = content.replace(
-        /((?:src|href|poster|content|data-src|data-original|data-image|data-lazy-src)\s*=\s*["'])([^"']+\.(?:png|jpe?g|gif|webp|mp4|ogv|webm)(?:[?#][^"']*)?)(["'])/gi,
+        /((?:src|href|poster|content|data-src|data-original|data-image|data-lazy-src)\s*=\s*["'])([^"']+\.(?:png|jpe?g|gif|webp|avif|mp4|ogv|webm)(?:[?#][^"']*)?)(["'])/gi,
         (match, prefix, rawPath, suffix) => {
             const replacement = resolveReplacement(rawPath);
             return replacement ? `${prefix}${replacement}${suffix}` : match;
@@ -293,7 +312,7 @@ function replaceImageRefs(content, codeFile, workDir, exactRewrites, onSkip) {
         /((?:srcset|imagesrcset|data-srcset)\s*=\s*["'])([^"']+)(["'])/gi,
         (match, prefix, rawList, suffix) => {
             const rewritten = rawList.replace(
-                /([^,\s]+?\.(?:png|jpe?g|gif|webp|mp4|ogv|webm)(?:[?#][^,\s]+)?)(\s+\d+(?:\.\d+)?[wx])?/gi,
+                /([^,\s]+?\.(?:png|jpe?g|gif|webp|avif|mp4|ogv|webm)(?:[?#][^,\s]+)?)(\s+\d+(?:\.\d+)?[wx])?/gi,
                 (entryMatch, rawPath, descriptor = "") => {
                     const replacement = resolveReplacement(rawPath);
                     return replacement ? `${replacement}${descriptor}` : entryMatch;
@@ -304,7 +323,7 @@ function replaceImageRefs(content, codeFile, workDir, exactRewrites, onSkip) {
     );
 
     updated = updated.replace(
-        /(url\(\s*['"]?)([^'")]+\.(?:png|jpe?g|gif|webp|mp4|ogv|webm)(?:[?#][^'")]+)?)(['"]?\s*\))/gi,
+        /(url\(\s*['"]?)([^'")]+\.(?:png|jpe?g|gif|webp|avif|mp4|ogv|webm)(?:[?#][^'")]+)?)(['"]?\s*\))/gi,
         (match, prefix, rawPath, suffix) => {
             const replacement = resolveReplacement(rawPath);
             return replacement ? `${prefix}${replacement}${suffix}` : match;
@@ -315,13 +334,13 @@ function replaceImageRefs(content, codeFile, workDir, exactRewrites, onSkip) {
         /((?:image-set|-webkit-image-set)\(\s*)([\s\S]*?)(\))/gi,
         (match, prefix, body, suffix) => {
             const rewritten = body.replace(
-                /(url\(\s*['"]?)([^'")]+\.(?:png|jpe?g|gif|webp|mp4|ogv|webm)(?:[?#][^'")]+)?)(['"]?\s*\))/gi,
+                /(url\(\s*['"]?)([^'")]+\.(?:png|jpe?g|gif|webp|avif|mp4|ogv|webm)(?:[?#][^'")]+)?)(['"]?\s*\))/gi,
                 (innerMatch, innerPrefix, rawPath, innerSuffix) => {
                     const replacement = resolveReplacement(rawPath);
                     return replacement ? `${innerPrefix}${replacement}${innerSuffix}` : innerMatch;
                 }
             ).replace(
-                /(^|[\s,])(['"]?)([^'",\s)]+?\.(?:png|jpe?g|gif|webp|mp4|ogv|webm)(?:[?#][^'",\s)]+)?)(\2)(?=\s+\d+(?:\.\d+)?x|[\s,)]|$)/gi,
+                /(^|[\s,])(['"]?)([^'",\s)]+?\.(?:png|jpe?g|gif|webp|avif|mp4|ogv|webm)(?:[?#][^'",\s)]+)?)(\2)(?=\s+\d+(?:\.\d+)?x|[\s,)]|$)/gi,
                 (innerMatch, lead, quote, rawPath, endQuote) => {
                     const replacement = resolveReplacement(rawPath);
                     return replacement ? `${lead}${quote}${replacement}${endQuote}` : innerMatch;
@@ -332,7 +351,7 @@ function replaceImageRefs(content, codeFile, workDir, exactRewrites, onSkip) {
     );
 
     updated = updated.replace(
-        /((?:^|["'`(\s=:/\\]))([^"'`\s)<>]+?\.(?:png|jpe?g|gif|webp|mp4|ogv|webm)(?:[?#][^"'`\s)]*)?)(?=$|["'`\s),>])/gi,
+        /((?:^|["'`(\s=:/\\]))([^"'`\s)<>]+?\.(?:png|jpe?g|gif|webp|avif|mp4|ogv|webm)(?:[?#][^"'`\s)]*)?)(?=$|["'`\s),>])/gi,
         (match, prefix, rawPath) => {
             const replacement = resolveReplacement(rawPath);
             return replacement ? `${prefix}${replacement}` : match;
@@ -433,6 +452,28 @@ async function buildBestGifWebp(inputBuffer) {
     return variants.reduce((best, current) => current.size < best.size ? current : best);
 }
 
+// Encode a static image into several modern-codec candidates and return the
+// smallest one. WebP and AVIF target the same visual quality, so picking the
+// minimum is a pure size win (it only costs extra encode CPU). The lossless
+// WebP candidate wins on flat graphics/logos; AVIF usually wins on photos.
+async function buildBestImageVariant(inputBuffer) {
+    const [webpLossy, webpLossless, avif] = await Promise.all([
+        sharp(inputBuffer).webp({ quality: 82, effort: 6, smartSubsample: true }).toBuffer(),
+        sharp(inputBuffer).webp({ lossless: true, effort: 6 }).toBuffer().catch(() => null),
+        sharp(inputBuffer).avif({ quality: 52, effort: 4 }).toBuffer().catch(() => null)
+    ]);
+
+    const variants = [{ buffer: webpLossy, size: webpLossy.byteLength, ext: "webp" }];
+    if (webpLossless) {
+        variants.push({ buffer: webpLossless, size: webpLossless.byteLength, ext: "webp" });
+    }
+    if (avif) {
+        variants.push({ buffer: avif, size: avif.byteLength, ext: "avif" });
+    }
+
+    return variants.reduce((best, current) => current.size < best.size ? current : best);
+}
+
 function buildVideoCommandArgs(filePath, targetExt, codecArgs, outputPath) {
     const baseArgs = ["-y", "-i", filePath, "-map_metadata", "-1"];
     const isGifTarget = targetExt === "gif";
@@ -453,7 +494,7 @@ async function optimizeVideo(filePath, targetExt) {
     let codecArgs;
 
     if (targetExt === "mp4") {
-        codecArgs = ["-movflags", "+faststart", "-c:v", "libx264", "-preset", "medium", "-crf", "28", "-c:a", "aac", "-b:a", "128k"];
+        codecArgs = ["-movflags", "+faststart", "-c:v", "libx264", "-preset", "slow", "-crf", "28", "-c:a", "aac", "-b:a", "128k"];
     } else if (targetExt === "webm") {
         codecArgs = ["-c:v", "libvpx-vp9", "-crf", "36", "-b:v", "0", "-deadline", "good", "-cpu-used", "2", "-c:a", "libopus", "-b:a", "96k"];
     } else if (targetExt === "gif") {
@@ -690,7 +731,10 @@ async function cmdOptimize(workDir, optionArgs = []) {
 
     emit({ type: "status", message: `Optimizing ${fmtSummary || "0 files"}...` });
 
-    for (const plan of toConvert) {
+    const imageLimit = Math.max(1, Math.min(cpus().length, 8));
+    const videoLimit = Math.max(1, Math.min(cpus().length / 2, 2));
+
+    await runPool(toConvert, imageLimit, async (plan) => {
         const mediaPath = plan.filePath;
         const rel = relativePath(workDir, mediaPath);
         try {
@@ -711,12 +755,7 @@ async function cmdOptimize(workDir, optionArgs = []) {
                     originalSize,
                     message: `Заменено существующим WEBP: ${relWebp}`
                 });
-                done++;
-                emit({ type: "progress", done, total, percent: total ? Math.round((done / total) * 100) : 100, file: rel });
-                continue;
-            }
-
-            if (plan.kind === "video" && VIDEO_EXTS.has(fileExt)) {
+            } else if (plan.kind === "video" && VIDEO_EXTS.has(fileExt)) {
                 const optimizedTemp = await optimizeVideo(mediaPath, plan.targetExt);
                 const newSize = (await stat(optimizedTemp)).size;
                 const finalOut = plannedTargets.get(mediaPath) ?? mediaPath;
@@ -731,82 +770,77 @@ async function cmdOptimize(workDir, optionArgs = []) {
                         file: rel,
                         message: `Пропущено: результат больше исходного (${originalSize} -> ${newSize} байт)`
                     });
-                    done++;
-                    emit({ type: "progress", done, total, percent: total ? Math.round((done / total) * 100) : 100, file: rel });
-                    continue;
+                } else {
+                    await safeUnlink(mediaPath);
+                    await rename(optimizedTemp, finalOut);
+
+                    const saved = originalSize - newSize;
+                    savedBytes += saved;
+                    if (finalOut !== mediaPath) {
+                        exactRewrites.set(normalizeRef(rel), relativePath(workDir, finalOut));
+                    }
+
+                    report.push({
+                        type: "converted",
+                        reason: "optimized",
+                        file: rel,
+                        srcFormat: plan.targetExt.toUpperCase(),
+                        originalSize,
+                        newSize,
+                        saved,
+                        savedPercent: Math.round((saved / originalSize) * 100)
+                    });
                 }
-
-                await safeUnlink(mediaPath);
-                await rename(optimizedTemp, finalOut);
-
-                const saved = originalSize - newSize;
-                savedBytes += saved;
-                if (finalOut !== mediaPath) {
-                    exactRewrites.set(normalizeRef(rel), relativePath(workDir, finalOut));
-                }
-
-                report.push({
-                    type: "converted",
-                    reason: "optimized",
-                    file: rel,
-                    srcFormat: plan.targetExt.toUpperCase(),
-                    originalSize,
-                    newSize,
-                    saved,
-                    savedPercent: Math.round((saved / originalSize) * 100)
-                });
-                done++;
-                emit({ type: "progress", done, total, percent: total ? Math.round((done / total) * 100) : 100, file: rel });
-                continue;
-            }
-
-            const out = plannedTargets.get(mediaPath) ?? toWebpPath(mediaPath);
-            const inputBuffer = await readFile(mediaPath);
-            let newSize;
-
-            if (isGif(mediaPath)) {
-                const bestGifVariant = await buildBestGifWebp(inputBuffer);
-                await writeFile(out, bestGifVariant.buffer);
-                newSize = bestGifVariant.size;
             } else {
-                await sharp(inputBuffer).webp({ quality: 82, effort: 4 }).toFile(out);
-                newSize = (await stat(out)).size;
-            }
+                const plannedOut = plannedTargets.get(mediaPath) ?? toWebpPath(mediaPath);
+                const inputBuffer = await readFile(mediaPath);
+                let out = plannedOut;
+                let newSize;
 
-            if (newSize >= originalSize) {
-                await safeUnlink(out);
-                report.push({
-                    type: "error",
-                    reason: "larger-than-source",
-                    file: rel,
-                    message: `Пропущено: результат больше исходного (${originalSize} -> ${newSize} байт)`
-                });
-                done++;
-                emit({ type: "progress", done, total, percent: total ? Math.round((done / total) * 100) : 100, file: rel });
-                continue;
-            }
+                if (isGif(mediaPath)) {
+                    const bestGifVariant = await buildBestGifWebp(inputBuffer);
+                    await writeFile(out, bestGifVariant.buffer);
+                    newSize = bestGifVariant.size;
+                } else {
+                    const bestVariant = await buildBestImageVariant(inputBuffer);
+                    out = bestVariant.ext === "avif" ? swapExtension(plannedOut, "avif") : plannedOut;
+                    await writeFile(out, bestVariant.buffer);
+                    newSize = bestVariant.size;
+                }
 
-            const saved = originalSize - newSize;
-            savedBytes += saved;
-            await safeUnlink(mediaPath);
-            const relWebp = relativePath(workDir, out);
-            exactRewrites.set(normalizeRef(rel), relWebp);
-            report.push({
-                type: "converted",
-                reason: "optimized",
-                file: rel,
-                srcFormat: isPng(mediaPath) ? "PNG" : isGif(mediaPath) ? "GIF" : "JPG",
-                originalSize,
-                newSize,
-                saved,
-                savedPercent: Math.round((saved / originalSize) * 100)
-            });
+                if (newSize >= originalSize) {
+                    await safeUnlink(out);
+                    report.push({
+                        type: "error",
+                        reason: "larger-than-source",
+                        file: rel,
+                        message: `Пропущено: результат больше исходного (${originalSize} -> ${newSize} байт)`
+                    });
+                } else {
+                    const saved = originalSize - newSize;
+                    savedBytes += saved;
+                    await safeUnlink(mediaPath);
+                    const relOut = relativePath(workDir, out);
+                    exactRewrites.set(normalizeRef(rel), relOut);
+                    report.push({
+                        type: "converted",
+                        reason: "optimized",
+                        file: rel,
+                        srcFormat: isPng(mediaPath) ? "PNG" : isGif(mediaPath) ? "GIF" : "JPG",
+                        originalSize,
+                        newSize,
+                        saved,
+                        savedPercent: Math.round((saved / originalSize) * 100)
+                    });
+                }
+            }
         } catch (err) {
             report.push({ type: "error", reason: "error", file: rel, message: toRussianError(err.message) });
+        } finally {
+            done++;
+            emit({ type: "progress", done, total, percent: total ? Math.round((done / total) * 100) : 100, file: rel });
         }
-        done++;
-        emit({ type: "progress", done, total, percent: total ? Math.round((done / total) * 100) : 100, file: rel });
-    }
+    });
 
     for (const plan of toDelete) {
         const rel = relativePath(workDir, plan.filePath);
@@ -914,7 +948,7 @@ async function cmdOptimize(workDir, optionArgs = []) {
                 const sourceFormat = sourceExt.replace(".", "").toUpperCase();
 
                 try {
-                    if (IMAGE_EXTS.has(sourceExt) || sourceExt === ".webp") {
+                    if (IMAGE_EXTS.has(sourceExt) || sourceExt === ".webp" || sourceExt === ".avif") {
                         const inputBuffer = await readFile(sourcePath);
                         const strictVariant = await buildBestStrictImageVariant(sourcePath, inputBuffer);
                         const targetExt = strictVariant.targetExt;
