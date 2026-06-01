@@ -847,7 +847,6 @@ fn main() {
             }
         }))
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_shell::init())
         .setup(|app| {
             #[cfg(desktop)]
             app.handle()
