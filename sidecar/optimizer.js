@@ -171,10 +171,12 @@ async function runPool(items, limit, worker) {
     if (items.length === 0) return;
     const effectiveLimit = Math.max(1, Math.min(limit, items.length));
     let cursor = 0;
-    const runners = Array.from({ length: effectiveLimit }, async () => {
+    // Each runner owns a stable lane id (0..effectiveLimit-1) for the whole run,
+    // so the UI can attribute per-file events to a fixed worker cell.
+    const runners = Array.from({ length: effectiveLimit }, async (_unused, laneId) => {
         while (cursor < items.length) {
             const index = cursor++;
-            await worker(items[index], index);
+            await worker(items[index], index, laneId);
         }
     });
     await Promise.all(runners);
@@ -379,7 +381,16 @@ async function safeUnlink(filePath, retries = 6) {
     }
 }
 
-function runFfmpeg(args) {
+// Parse "HH:MM:SS.xx" (ffmpeg's Duration/time format) into seconds.
+function parseFfmpegTime(text) {
+    const match = /(\d+):(\d{2}):(\d{2}(?:\.\d+)?)/.exec(text);
+    if (!match) return null;
+    return Number(match[1]) * 3600 + Number(match[2]) * 60 + Number(match[3]);
+}
+
+// Run ffmpeg, optionally reporting real intra-file progress (0..100) by parsing
+// the total Duration once and each periodic `time=` line out of stderr.
+function runFfmpeg(args, onProgress) {
     return new Promise((resolve, reject) => {
         const child = spawn("ffmpeg", args, {
             windowsHide: true,
@@ -387,8 +398,30 @@ function runFfmpeg(args) {
         });
 
         let stderr = "";
+        let durationSec = 0;
+        let lastPct = -1;
         child.stderr.on("data", chunk => {
-            stderr += String(chunk);
+            const text = String(chunk);
+            stderr += text;
+            if (!onProgress) return;
+            if (!durationSec) {
+                const durMatch = /Duration:\s*([\d:.]+)/.exec(stderr);
+                const dur = durMatch ? parseFfmpegTime(durMatch[1]) : null;
+                if (dur && dur > 0) durationSec = dur;
+            }
+            if (durationSec) {
+                const timeMatch = /time=\s*([\d:.]+)/g;
+                let m, latest = null;
+                while ((m = timeMatch.exec(text)) !== null) latest = m[1];
+                const elapsed = latest ? parseFfmpegTime(latest) : null;
+                if (elapsed != null) {
+                    const pct = Math.max(0, Math.min(99, Math.round((elapsed / durationSec) * 100)));
+                    if (pct !== lastPct) {
+                        lastPct = pct;
+                        onProgress(pct);
+                    }
+                }
+            }
         });
 
         child.on("error", reject);
@@ -482,15 +515,15 @@ function buildVideoCommandArgs(filePath, targetExt, codecArgs, outputPath) {
         : [...baseArgs, "-map", "0:v:0", "-map", "0:a?", ...codecArgs, outputPath];
 }
 
-async function transcodeVideoVariant(filePath, targetExt, codecArgs, label = "optimized") {
+async function transcodeVideoVariant(filePath, targetExt, codecArgs, label = "optimized", onProgress) {
     const extension = extname(filePath).toLowerCase();
     const tempPath = filePath.replace(new RegExp(`${extension.replace(".", "\\.")}$`, "i"), `.${label}.${targetExt}`);
     const args = buildVideoCommandArgs(filePath, targetExt, codecArgs, tempPath);
-    await runFfmpeg(args);
+    await runFfmpeg(args, onProgress);
     return tempPath;
 }
 
-async function optimizeVideo(filePath, targetExt) {
+async function optimizeVideo(filePath, targetExt, onProgress) {
     let codecArgs;
 
     if (targetExt === "mp4") {
@@ -503,7 +536,7 @@ async function optimizeVideo(filePath, targetExt) {
         throw new Error(`Unsupported target video format: ${targetExt}`);
     }
 
-    return transcodeVideoVariant(filePath, targetExt, codecArgs, "optimized");
+    return transcodeVideoVariant(filePath, targetExt, codecArgs, "optimized", onProgress);
 }
 
 async function buildBestStrictImageVariant(filePath, inputBuffer) {
@@ -603,6 +636,7 @@ async function cmdOptimize(workDir, optionArgs = []) {
     const dedupeImages = optionArgs.includes("--dedupe-images");
     const strictBudgetMb = parseStrictBudgetMb(optionArgs);
     const strictBudgetBytes = strictBudgetMb ? Math.round(strictBudgetMb * 1024 * 1024) : null;
+    const optimizeStart = Date.now();
 
     emit({ type: "status", message: "Scanning files..." });
 
@@ -639,7 +673,7 @@ async function cmdOptimize(workDir, optionArgs = []) {
     }
 
     if (allConvertibleFiles.length === 0 && !removeUnused && !strictBudgetBytes) {
-        emit({ type: "done", converted: 0, deleted: 0, replacedFiles: 0, savedBytes: 0, report: [] });
+        emit({ type: "done", converted: 0, deleted: 0, replacedFiles: 0, savedBytes: 0, report: [], totalMs: Date.now() - optimizeStart });
         return;
     }
 
@@ -683,7 +717,7 @@ async function cmdOptimize(workDir, optionArgs = []) {
     ];
 
     if (toConvert.length === 0 && toDelete.length === 0 && !removeUnused && !strictBudgetBytes) {
-        emit({ type: "done", converted: 0, deleted: 0, replacedFiles: 0, savedBytes: 0, report: [] });
+        emit({ type: "done", converted: 0, deleted: 0, replacedFiles: 0, savedBytes: 0, report: [], totalMs: Date.now() - optimizeStart });
         return;
     }
 
@@ -732,11 +766,18 @@ async function cmdOptimize(workDir, optionArgs = []) {
     emit({ type: "status", message: `Optimizing ${fmtSummary || "0 files"}...` });
 
     const imageLimit = Math.max(1, Math.min(cpus().length, 8));
-    const videoLimit = Math.max(1, Math.min(cpus().length / 2, 2));
+    // Images and videos share one pool, so the real concurrency the UI should
+    // mirror is the effective lane count for this batch.
+    const poolLanes = Math.max(1, Math.min(imageLimit, toConvert.length));
+    const laneFilesDone = new Array(poolLanes).fill(0);
+    emit({ type: "pool", lanes: poolLanes });
 
-    await runPool(toConvert, imageLimit, async (plan) => {
+    await runPool(toConvert, imageLimit, async (plan, _index, laneId) => {
         const mediaPath = plan.filePath;
         const rel = relativePath(workDir, mediaPath);
+        const laneKind = plan.kind === "video" ? "VID" : "IMG";
+        const fileStart = Date.now();
+        emit({ type: "worker", id: laneId, file: rel, kind: laneKind, state: "start", pct: 0 });
         try {
             const originalSize = (await stat(mediaPath)).size;
             const fileExt = extname(mediaPath).toLowerCase();
@@ -753,10 +794,13 @@ async function cmdOptimize(workDir, optionArgs = []) {
                     file: rel,
                     srcFormat: fileExt.slice(1).toUpperCase(),
                     originalSize,
+                    durationMs: Date.now() - fileStart,
                     message: `Заменено существующим WEBP: ${relWebp}`
                 });
             } else if (plan.kind === "video" && VIDEO_EXTS.has(fileExt)) {
-                const optimizedTemp = await optimizeVideo(mediaPath, plan.targetExt);
+                const optimizedTemp = await optimizeVideo(mediaPath, plan.targetExt, (pct) => {
+                    emit({ type: "worker", id: laneId, file: rel, kind: "VID", state: "progress", pct });
+                });
                 const newSize = (await stat(optimizedTemp)).size;
                 const finalOut = plannedTargets.get(mediaPath) ?? mediaPath;
                 const formatChanged = finalOut !== mediaPath;
@@ -768,6 +812,7 @@ async function cmdOptimize(workDir, optionArgs = []) {
                         type: "error",
                         reason: "larger-than-source",
                         file: rel,
+                        durationMs: Date.now() - fileStart,
                         message: `Пропущено: результат больше исходного (${originalSize} -> ${newSize} байт)`
                     });
                 } else {
@@ -788,7 +833,8 @@ async function cmdOptimize(workDir, optionArgs = []) {
                         originalSize,
                         newSize,
                         saved,
-                        savedPercent: Math.round((saved / originalSize) * 100)
+                        savedPercent: Math.round((saved / originalSize) * 100),
+                        durationMs: Date.now() - fileStart
                     });
                 }
             } else {
@@ -814,6 +860,7 @@ async function cmdOptimize(workDir, optionArgs = []) {
                         type: "error",
                         reason: "larger-than-source",
                         file: rel,
+                        durationMs: Date.now() - fileStart,
                         message: `Пропущено: результат больше исходного (${originalSize} -> ${newSize} байт)`
                     });
                 } else {
@@ -830,20 +877,24 @@ async function cmdOptimize(workDir, optionArgs = []) {
                         originalSize,
                         newSize,
                         saved,
-                        savedPercent: Math.round((saved / originalSize) * 100)
+                        savedPercent: Math.round((saved / originalSize) * 100),
+                        durationMs: Date.now() - fileStart
                     });
                 }
             }
         } catch (err) {
-            report.push({ type: "error", reason: "error", file: rel, message: toRussianError(err.message) });
+            report.push({ type: "error", reason: "error", file: rel, durationMs: Date.now() - fileStart, message: toRussianError(err.message) });
         } finally {
             done++;
+            laneFilesDone[laneId] = (laneFilesDone[laneId] || 0) + 1;
+            emit({ type: "worker", id: laneId, file: rel, kind: laneKind, state: "done", pct: 100, filesDone: laneFilesDone[laneId] });
             emit({ type: "progress", done, total, percent: total ? Math.round((done / total) * 100) : 100, file: rel });
         }
     });
 
     for (const plan of toDelete) {
         const rel = relativePath(workDir, plan.filePath);
+        const deleteStart = Date.now();
         try {
             const originalSize = (await stat(plan.filePath)).size;
             await safeUnlink(plan.filePath);
@@ -854,10 +905,11 @@ async function cmdOptimize(workDir, optionArgs = []) {
                 file: rel,
                 srcFormat: extname(plan.filePath).slice(1).toUpperCase(),
                 originalSize,
+                durationMs: Date.now() - deleteStart,
                 message: "Удалено по выбору пользователя"
             });
         } catch (err) {
-            report.push({ type: "error", reason: "error", file: rel, message: toRussianError(err.message) });
+            report.push({ type: "error", reason: "error", file: rel, durationMs: Date.now() - deleteStart, message: toRussianError(err.message) });
         }
         done++;
         emit({ type: "progress", done, total, percent: total ? Math.round((done / total) * 100) : 100, file: rel });
@@ -871,6 +923,7 @@ async function cmdOptimize(workDir, optionArgs = []) {
 
         for (const imgPath of currentImages) {
             const rel = relative(workDir, imgPath).replace(/\\/g, "/");
+            const dedupeStart = Date.now();
             const buffer = await readFile(imgPath);
             const hash = hashBuffer(buffer);
             const original = seenHashes.get(hash);
@@ -888,6 +941,7 @@ async function cmdOptimize(workDir, optionArgs = []) {
                 file: rel,
                 srcFormat: extname(imgPath).slice(1).toUpperCase(),
                 originalSize: buffer.length,
+                durationMs: Date.now() - dedupeStart,
                 message: `Дубликат объединен с ${original.rel}`
             });
         }
@@ -946,6 +1000,7 @@ async function cmdOptimize(workDir, optionArgs = []) {
                 const sourceExt = item.ext;
                 const sourceRel = relativePath(workDir, sourcePath);
                 const sourceFormat = sourceExt.replace(".", "").toUpperCase();
+                const strictStart = Date.now();
 
                 try {
                     if (IMAGE_EXTS.has(sourceExt) || sourceExt === ".webp" || sourceExt === ".avif") {
@@ -995,6 +1050,7 @@ async function cmdOptimize(workDir, optionArgs = []) {
                             newSize: tempSize,
                             saved,
                             savedPercent: Math.round((saved / item.size) * 100),
+                            durationMs: Date.now() - strictStart,
                             message: "Strict size pass"
                         });
                         continue;
@@ -1045,6 +1101,7 @@ async function cmdOptimize(workDir, optionArgs = []) {
                             newSize: strictVariant.outputSize,
                             saved,
                             savedPercent: Math.round((saved / item.size) * 100),
+                            durationMs: Date.now() - strictStart,
                             message: "Strict size pass"
                         });
                     }
@@ -1053,6 +1110,7 @@ async function cmdOptimize(workDir, optionArgs = []) {
                         type: "error",
                         reason: "error",
                         file: sourceRel,
+                        durationMs: Date.now() - strictStart,
                         message: toRussianError(err.message)
                     });
                 }
@@ -1118,6 +1176,7 @@ async function cmdOptimize(workDir, optionArgs = []) {
             }
 
             const rel = relative(workDir, assetPath).replace(/\\/g, "/");
+            const unusedStart = Date.now();
             const originalSize = (await stat(assetPath)).size;
             await safeUnlink(assetPath);
             report.push({
@@ -1126,6 +1185,7 @@ async function cmdOptimize(workDir, optionArgs = []) {
                 file: rel,
                 srcFormat: extname(assetPath).slice(1).toUpperCase(),
                 originalSize,
+                durationMs: Date.now() - unusedStart,
                 message: "Не используется в коде"
             });
             savedBytes += originalSize;

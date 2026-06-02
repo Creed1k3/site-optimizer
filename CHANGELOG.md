@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.7.0
+
+- new "Spark" blue icon set across the whole Tauri bundle (Windows, Store, macOS, iOS, Android)
+- redesigned interface with a custom window title bar (own minimize / maximize / close / drag controls)
+- added a thread-count stepper, a live worker-pool view, and an animated flow-field background
+- compression: AVIF output, `slow` preset, and parallel processing for better ratios and faster runs on multi-core machines
+- added a strict media size-budget mode
+- report items are now classified by machine-readable reason codes for clearer skip/error insight
+- reliability: concurrent sidecar stderr draining, more stable event listeners, removed dead video code
+- added security hardening and regression tests
+
 ## 0.6.0
 
 - upgraded report UI with smoother chart reveal animations

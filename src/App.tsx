@@ -2,6 +2,12 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import "./App.css";
+import "./styles.css";
+import "./styles-screens.css";
+import { Icon } from "./components/Icons";
+import { WorkerPool } from "./components/WorkerPool";
+import { TitleBar } from "./components/TitleBar";
+import { NumberStepper } from "./components/NumberStepper";
 
 type InputMode = "zip" | "folder";
 type ExportMode = "zip" | "folder";
@@ -53,6 +59,18 @@ interface ProgressState {
   total: number;
   percent: number;
   status: string;
+}
+
+// Real per-worker (pool lane) state, driven by sidecar "worker" events.
+interface LaneState {
+  id: number;
+  file: string;
+  kind: string;
+  /** real intra-file percent (videos); for images it stays 0 while active */
+  pct: number;
+  /** files this lane has finished */
+  filesDone: number;
+  active: boolean;
 }
 
 interface FloatingFile {
@@ -374,28 +392,6 @@ function getReferencedAssetBreakdown(assets: ReferencedAsset[]): ReferencedAsset
   });
 }
 
-function ZipIcon() {
-  return (
-    <span className="segmented-icon" aria-hidden="true">
-      <svg viewBox="0 0 16 16" className="segmented-icon-svg">
-        <rect x="3.2" y="2.7" width="9.6" height="10.6" rx="2.2" className="segmented-icon-stroke" />
-        <path d="M8 3.9v8.2" className="segmented-icon-stroke" />
-        <path d="M7.2 5.35h1.6M7.2 7.6h1.6M7.2 9.85h1.6" className="segmented-icon-detail" />
-      </svg>
-    </span>
-  );
-}
-
-function FolderIcon() {
-  return (
-    <span className="segmented-icon" aria-hidden="true">
-      <svg viewBox="0 0 16 16" className="segmented-icon-svg">
-        <path d="M2.75 5.25a1.5 1.5 0 0 1 1.5-1.5h2.1l1.1 1.3h4.3a1.5 1.5 0 0 1 1.5 1.5v4.2a1.5 1.5 0 0 1-1.5 1.5h-7.5a1.5 1.5 0 0 1-1.5-1.5z" className="segmented-icon-stroke" />
-      </svg>
-    </span>
-  );
-}
-
 export default function App() {
   const launchModeRef = useRef<"normal" | "quick">("normal");
   const [locale, setLocale] = useState<Locale>(() => {
@@ -409,10 +405,12 @@ export default function App() {
   const [outputPath, setOutputPath] = useState<string | null>(null);
   const [phase, setPhase] = useState<Phase>("idle");
   const [progress, setProgress] = useState<ProgressState>({ done: 0, total: 0, percent: 0, status: "" });
+  const [lanes, setLanes] = useState<LaneState[]>([]);
   const [result, setResult] = useState<DonePayload | null>(null);
   const [errorMsg, setErrorMsg] = useState<string>("");
   const [isDragging, setIsDragging] = useState(false);
   const [activeTab, setActiveTab] = useState<ReportTab>("assets");
+  const [reportSearch, setReportSearch] = useState("");
   const [exportMode, setExportMode] = useState<ExportMode>("zip");
   const [floatingFiles, setFloatingFiles] = useState<FloatingFile[]>([]);
   const [currentFile, setCurrentFile] = useState<string>("");
@@ -449,6 +447,10 @@ export default function App() {
   const [isReportOpen, setIsReportOpen] = useState(false);
   const [batchPaused, setBatchPaused] = useState(false);
   const [autoCloseSeconds, setAutoCloseSeconds] = useState<number | null>(null);
+  const [theme, setTheme] = useState<"light" | "dark">(() => {
+    if (typeof window === "undefined") return "light";
+    return window.localStorage.getItem("site-optimizer-theme") === "dark" ? "dark" : "light";
+  });
   const unlisten = useRef<(() => void) | null>(null);
   const floatCounter = useRef(0);
   const languageSwitcherRef = useRef<HTMLDivElement | null>(null);
@@ -581,6 +583,35 @@ export default function App() {
   useEffect(() => {
     window.localStorage.setItem("site-optimizer-locale", locale);
   }, [locale]);
+
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", theme);
+    window.localStorage.setItem("site-optimizer-theme", theme);
+  }, [theme]);
+
+  const toggleTheme = useCallback((event: React.MouseEvent) => {
+    const next = theme === "dark" ? "light" : "dark";
+    const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    const startViewTransition = (document as Document & { startViewTransition?: (cb: () => void) => { ready: Promise<void> } }).startViewTransition;
+    if (!startViewTransition || reduce) {
+      setTheme(next);
+      return;
+    }
+    const rect = event.currentTarget.getBoundingClientRect();
+    const x = rect.left + rect.width / 2;
+    const y = rect.top + rect.height / 2;
+    const vt = startViewTransition.call(document, () => {
+      document.documentElement.setAttribute("data-theme", next);
+    });
+    setTheme(next);
+    vt.ready.then(() => {
+      const r = Math.hypot(Math.max(x, window.innerWidth - x), Math.max(y, window.innerHeight - y));
+      document.documentElement.animate(
+        { clipPath: [`circle(0px at ${x}px ${y}px)`, `circle(${r}px at ${x}px ${y}px)`] },
+        { duration: 620, easing: "cubic-bezier(0.22, 1, 0.36, 1)", pseudoElement: "::view-transition-new(root)" }
+      );
+    });
+  }, [theme]);
 
   useEffect(() => {
     window.localStorage.setItem("site-optimizer-remove-unused", String(removeUnused));
@@ -948,6 +979,7 @@ export default function App() {
     setOutputPath(null);
     setErrorMsg("");
     setFloatingFiles([]);
+    setLanes([]);
     setCurrentFile("");
     setInputPath(path);
     setInputMode(mode);
@@ -1027,6 +1059,24 @@ export default function App() {
               total: data.toConvert + data.toDelete
             }));
             break;
+          case "pool":
+            setLanes(Array.from({ length: Math.max(1, data.lanes) }, (_, i) => ({
+              id: i, file: "", kind: "", pct: 0, filesDone: 0, active: false,
+            })));
+            break;
+          case "worker":
+            setLanes((prev) => {
+              if (prev.length === 0) return prev;
+              return prev.map((lane) => lane.id !== data.id ? lane : {
+                id: data.id,
+                file: data.file ?? lane.file,
+                kind: data.kind ?? lane.kind,
+                pct: data.state === "done" ? 100 : (data.pct ?? lane.pct),
+                filesDone: data.state === "done" ? (data.filesDone ?? lane.filesDone) : lane.filesDone,
+                active: data.state !== "done",
+              });
+            });
+            break;
           case "progress":
             setProgress((state) => ({ ...state, done: data.done, total: data.total, percent: data.percent }));
             if (data.file) spawnFloatingFile(data.file);
@@ -1035,6 +1085,7 @@ export default function App() {
             setResult(data as DonePayload);
             setPhase("reviewing");
             setFloatingFiles([]);
+            setLanes([]);
             setCurrentFile("");
             unlisten.current?.();
             unlisten.current = null;
@@ -1050,6 +1101,7 @@ export default function App() {
             setErrorMsg(data.message);
             setPhase("error");
             setFloatingFiles([]);
+            setLanes([]);
             setCurrentFile("");
             unlisten.current?.();
             unlisten.current = null;
@@ -1236,6 +1288,7 @@ export default function App() {
     setIsReportOpen(false);
     setErrorMsg("");
     setFloatingFiles([]);
+    setLanes([]);
     setCurrentFile("");
     setProgress({ done: 0, total: 0, percent: 0, status: "" });
     setClosePromptOpen(false);
@@ -1248,6 +1301,8 @@ export default function App() {
 
   const stepIndex = { idle: 0, preparing: 0, running: 1, reviewing: 2, exporting: 3, done: 3, error: 0, batching: 1, batchDone: 3 };
   const isBusyPhase = phase === "preparing" || phase === "running" || phase === "exporting" || phase === "batching";
+  // visible worker count — bound to host concurrency (ready to swap for a real value)
+  const workerThreads = Math.max(2, Math.min(8, (typeof navigator !== "undefined" && navigator.hardwareConcurrency) || 4));
   const pauseLabel = locale === "ru" ? "\u041f\u0430\u0443\u0437\u0430" : "Pause";
   const resumeLabel = locale === "ru" ? "\u041f\u0440\u043e\u0434\u043e\u043b\u0436\u0438\u0442\u044c" : "Resume";
   const stopLabel = locale === "ru" ? "\u041e\u0441\u0442\u0430\u043d\u043e\u0432\u0438\u0442\u044c" : "Stop";
@@ -1670,445 +1725,632 @@ export default function App() {
       </div>
     );
   };
+
+  const renderReportTwoPane = (
+    report: ReportItem[],
+    referencedAssets: ReferencedAsset[],
+    breakdown: ReportBreakdown,
+    assetBreakdown: ReferencedAssetBreakdown,
+    options: { title: string; output?: string; savedBytes: number; converted: number }
+  ) => {
+    const ru = locale === "ru";
+    const kindClass = (k: string) => (k === "font" ? "fnt" : k === "style" ? "css" : k === "script" ? "js" : "img");
+    const kindIcon = (k: string) => (k === "font" ? Icon.type : k === "style" ? Icon.code : k === "script" ? Icon.brace : Icon.image);
+    const kindLabel = (k: string) => {
+      const ruMap: Record<string, string> = { image: "Изображения", font: "Шрифты", style: "Стили", script: "Скрипты", video: "Видео", other: "Прочее" };
+      const enMap: Record<string, string> = { image: "Images", font: "Fonts", style: "Styles", script: "Scripts", video: "Video", other: "Other" };
+      return (ru ? ruMap : enMap)[k] ?? k;
+    };
+    const extKind = (file: string) => {
+      const e = (file.split(".").pop() || "").toLowerCase();
+      if (["webp", "png", "jpg", "jpeg", "svg", "gif", "avif"].includes(e)) return "image";
+      if (["woff2", "woff", "ttf", "otf"].includes(e)) return "font";
+      if (e === "css") return "style";
+      if (e === "js") return "script";
+      if (["mp4", "webm", "mov"].includes(e)) return "video";
+      return "other";
+    };
+
+    const q = reportSearch.trim().toLowerCase();
+    const matches = (s: string) => !q || s.toLowerCase().includes(q);
+    const deletedItems = report.filter((r) => r.type === "deleted" && matches(r.file));
+    const errorItems = report.filter((r) => r.type === "error" && matches(r.file));
+    const assetItems = referencedAssets.filter((a) => matches(a.file));
+
+    const tab = activeTab === "deleted" || activeTab === "errors" ? activeTab : "assets";
+    const total = assetBreakdown.present + assetBreakdown.missing;
+    const pct = total > 0 ? Math.round((assetBreakdown.present / total) * 100) : 0;
+    const R = 52, C = 2 * Math.PI * R, GAP = 7;
+    const mLen = total > 0 ? (assetBreakdown.present / total) * C - GAP : 0;
+    const dLen = total > 0 ? (assetBreakdown.missing / total) * C - GAP : 0;
+
+    const cats = [
+      { l: kindLabel("image"), n: assetBreakdown.image, ic: Icon.image },
+      { l: kindLabel("font"), n: assetBreakdown.font, ic: Icon.type },
+      { l: kindLabel("style"), n: assetBreakdown.style, ic: Icon.code },
+      { l: kindLabel("script"), n: assetBreakdown.script, ic: Icon.brace },
+    ];
+    const tabs: Array<[ReportTab, string, (p: { size?: number }) => JSX.Element, number]> = [
+      ["assets", ru ? "Найдено в коде" : "Found in code", Icon.check, assetBreakdown.total],
+      ["deleted", ru ? "Удалено" : "Removed", Icon.trash, breakdown.deleted],
+      ["errors", ru ? "Ошибки" : "Errors", Icon.alert, breakdown.errors],
+    ];
+    const baseName = options.title.split(/[\\/]/).pop() ?? options.title;
+
+    return (
+      <div className="report-layout">
+        <aside className="report-rail">
+          <div className="eyebrow">{ru ? "Отчёт об оптимизации" : "Optimization report"}</div>
+
+          <div className="hero-metric">
+            <div className="hm-val"><span className="num">{formatBytes(options.savedBytes)}</span></div>
+            <div className="hm-row"><span className="hm-lab">{ru ? "сэкономлено" : "saved"}</span></div>
+          </div>
+
+          <div className="path-chip">
+            {Icon.folder({ size: 14 })}
+            <span className="mono">{baseName}</span>
+          </div>
+
+          <div className="cov-block">
+            <div className="cov-donut">
+              <svg width="124" height="124" viewBox="0 0 124 124">
+                <circle cx="62" cy="62" r={R} fill="none" stroke="var(--surface-2)" strokeWidth="11" />
+                {total > 0 && (
+                  <>
+                    <circle cx="62" cy="62" r={R} fill="none" stroke="var(--donut-on)" strokeWidth="11" strokeLinecap="round"
+                      strokeDasharray={`${Math.max(0, mLen)} ${C - Math.max(0, mLen)}`} strokeDashoffset="0" />
+                    <circle cx="62" cy="62" r={R} fill="none" stroke="var(--donut-off)" strokeWidth="11" strokeLinecap="round"
+                      strokeDasharray={`${Math.max(0, dLen)} ${C - Math.max(0, dLen)}`} strokeDashoffset={-(Math.max(0, mLen) + GAP)} />
+                  </>
+                )}
+              </svg>
+              <div className="cov-center">
+                <div className="p">{pct}<span>%</span></div>
+                <div className="l">{ru ? "покрытие" : "coverage"}</div>
+              </div>
+            </div>
+            <div className="cov-legend">
+              <div className="cl-item"><span className="dot" style={{ background: "var(--donut-on)" }} />
+                <span className="cl-l">{reportPresentLabel}</span><span className="cl-v">{assetBreakdown.present}</span></div>
+              <div className="cl-item"><span className="dot" style={{ background: "var(--donut-off)" }} />
+                <span className="cl-l">{reportMissingLabel}</span><span className="cl-v">{assetBreakdown.missing}</span></div>
+            </div>
+          </div>
+
+          <div className="rail-stats">
+            <div className="rs"><div className="rs-n">{report.length}</div><div className="rs-l">{ru ? "Обработано" : "Processed"}</div></div>
+            <div className="rs"><div className="rs-n red">{breakdown.deleted}</div><div className="rs-l">{t.deleted}</div></div>
+            <div className="rs"><div className="rs-n">{options.converted}</div><div className="rs-l">{t.compressed}</div></div>
+            <div className="rs"><div className="rs-n">{breakdown.errors}</div><div className="rs-l">{t.tabErrors}</div></div>
+          </div>
+        </aside>
+
+        <section className="report-main">
+          <div className="rm-head">
+            <h2>{reportTitle}</h2>
+            <div className="search">
+              {Icon.search({ size: 15 })}
+              <input value={reportSearch} onChange={(e) => setReportSearch(e.target.value)} placeholder={ru ? "Найти файл…" : "Find file…"} />
+            </div>
+          </div>
+
+          <div className="cat-strip">
+            {cats.map((c) => (
+              <div className="cat-card" key={c.l}>
+                <span className="cat-ic">{c.ic({ size: 15 })}</span>
+                <span className="cat-n">{c.n}</span>
+                <span className="cat-l">{c.l}</span>
+              </div>
+            ))}
+          </div>
+
+          <div className="rtabs">
+            {tabs.map(([key, label, ic, count]) => (
+              <button key={key} className={`rtab ${tab === key ? "on" : ""}`} onClick={() => { setActiveTab(key); }}>
+                {ic({ size: 14 })}{label}<span className="badge">{count}</span>
+              </button>
+            ))}
+          </div>
+
+          <div className="flist" key={`${options.title}-${tab}-${q}`}>
+            {tab === "assets" && (assetItems.length === 0 ? (
+              <div className="empty-list"><span className="el-ic">{Icon.check({ size: 22 })}</span>{q ? (ru ? "Ничего не найдено по запросу" : "No matches") : (ru ? "Здесь пока ничего нет" : "Nothing here yet")}</div>
+            ) : assetItems.map((a, i) => (
+              <div className="frow" key={`a-${i}`}>
+                <span className={`ftype ${kindClass(a.kind)}`}>{kindIcon(a.kind)({ size: 15 })}</span>
+                <span className="fmeta"><span className="fname">{a.file}</span><span className="fcat">{kindLabel(a.kind)}</span></span>
+                <span className={`fstatus ${a.exists ? "found" : "missing"}`}><span className="sd" />{a.exists ? reportPresentLabel : reportMissingLabel}</span>
+              </div>
+            )))}
+
+            {tab === "deleted" && (deletedItems.length === 0 ? (
+              <div className="empty-list"><span className="el-ic">{Icon.check({ size: 22 })}</span>{q ? (ru ? "Ничего не найдено по запросу" : "No matches") : t.emptyTab}</div>
+            ) : deletedItems.map((item, i) => (
+              <div className="frow" key={`d-${i}`}>
+                <span className={`ftype ${kindClass(extKind(item.file))}`}>{kindIcon(extKind(item.file))({ size: 15 })}</span>
+                <span className="fmeta"><span className="fname">{item.file}</span><span className="fcat">{getReportReasonInfo(item, locale).label}</span></span>
+                <span className="fstatus found"><span className="sd" />{ru ? "удалено" : "removed"}</span>
+              </div>
+            )))}
+
+            {tab === "errors" && (errorItems.length === 0 ? (
+              <div className="empty-list"><span className="el-ic">{Icon.check({ size: 22 })}</span>{q ? (ru ? "Ничего не найдено по запросу" : "No matches") : (ru ? "Ошибок нет — всё чисто" : "No errors — all clean")}</div>
+            ) : errorItems.map((item, i) => (
+              <div className="frow" key={`e-${i}`}>
+                <span className={`ftype ${kindClass(extKind(item.file))}`}>{kindIcon(extKind(item.file))({ size: 15 })}</span>
+                <span className="fmeta"><span className="fname">{item.file}</span><span className="fcat">{item.message ?? getReportReasonInfo(item, locale).label}</span></span>
+                <span className="fstatus missing"><span className="sd" />{ru ? "ошибка" : "error"}</span>
+              </div>
+            )))}
+          </div>
+        </section>
+      </div>
+    );
+  };
+
   return (
-    <div className="app">
-      <header className="header">
-        <div className="language-switcher" ref={languageSwitcherRef}>
-          <span className="language-label">{t.languageLabel}</span>
-          <div className={`language-select-wrap ${isLanguageOpen ? "language-select-wrap--open" : ""}`}>
+    <div className="win">
+      <TitleBar />
+      <div className="topbar">
+        <div className="topbar-left">
+          <div className="lang-wrap" ref={languageSwitcherRef}>
             <button
               type="button"
-              className="language-trigger"
+              className={`lang-pill ${isLanguageOpen ? "open" : ""}`}
               onClick={() => setIsLanguageOpen((open) => !open)}
               aria-haspopup="listbox"
               aria-expanded={isLanguageOpen}
             >
-              <span>{currentLanguageLabel}</span>
-              <span className="language-trigger-arrow" />
+              {Icon.globe({ size: 15 })}
+              <span className="code">{locale.toUpperCase()}</span>
+              <span className="chev">{Icon.chevron({ size: 14 })}</span>
             </button>
 
             {isLanguageOpen && (
-              <div className="language-menu" role="listbox" aria-label={t.languageLabel}>
-                <button
-                  type="button"
-                  className="language-menu-item"
-                  onClick={() => {
-                    setLocale(alternateLocale);
-                    setIsLanguageOpen(false);
-                  }}
-                >
-                  {alternateLanguageLabel}
-                </button>
+              <div className="lang-menu" role="listbox" aria-label={t.languageLabel}>
+                <div className="lang-menu-head">{t.languageLabel}</div>
+                {(["ru", "en"] as const).map((code) => (
+                  <button
+                    key={code}
+                    type="button"
+                    className={`lang-opt ${locale === code ? "on" : ""}`}
+                    onClick={() => {
+                      setLocale(code);
+                      setIsLanguageOpen(false);
+                    }}
+                  >
+                    <span className="badge">{code.toUpperCase()}</span>
+                    <span className="txt">
+                      <span className="l1">{code === "ru" ? translations.ru.languageNative : translations.en.languageEnglish}</span>
+                      <span className="l2">{code === "ru" ? "Russian" : "English"}</span>
+                    </span>
+                    {locale === code && <span className="tick">{Icon.check({ size: 14, sw: 2.4 })}</span>}
+                  </button>
+                ))}
               </div>
             )}
           </div>
         </div>
 
-        <div className="header-steps">
+        <div className="stepper">
           {t.steps.map((step, index) => (
-            <div key={step} className={`step ${currentStep === index ? "step--active" : ""} ${currentStep > index ? "step--done" : ""}`}>
-              <span className="step-num">{currentStep > index ? "✓" : index + 1}</span>
-              <span className="step-label">{step}</span>
+            <div key={step} style={{ display: "contents" }}>
+              {index > 0 && <span className="step-sep" />}
+              <button
+                type="button"
+                className={`step ${currentStep === index ? "active" : ""} ${currentStep > index ? "done" : ""}`}
+                disabled
+              >
+                <span className="dot">{currentStep > index ? Icon.check({ size: 11, sw: 2.6 }) : index + 1}</span>
+                <span className="label">{step}</span>
+              </button>
             </div>
           ))}
         </div>
 
-        <div className="header-tools">
-          <button className="settings-btn" type="button" onClick={() => setIsSettingsOpen(true)} aria-label={settingsTitle}>
-            <span className="settings-btn-icon">⚙</span>
-          </button>
-          <span className="header-version">v{__APP_VERSION__}</span>
+        <div className="topbar-right">
+          <div className="tr-controls">
+            <button
+              type="button"
+              className={`theme-toggle ${theme === "dark" ? "is-dark" : ""}`}
+              onClick={toggleTheme}
+              aria-label="Toggle theme"
+            >
+              <span className="tt-orb">
+                <span className="tt-ic sun">{Icon.sun({ size: 16 })}</span>
+                <span className="tt-ic moon">{Icon.moon({ size: 15 })}</span>
+              </span>
+            </button>
+            <button className="icon-btn" type="button" onClick={() => setIsSettingsOpen(true)} aria-label={settingsTitle}>
+              {Icon.gear({ size: 17 })}
+            </button>
+          </div>
+          <div className="ver-wrap">
+            <button type="button" className="ver-btn" disabled>
+              <span className="ver-dot" />
+              <span className="ver-num">v{__APP_VERSION__}</span>
+            </button>
+          </div>
         </div>
-      </header>
+      </div>
 
-      <main className="main">
+      <div className="stage">
         {phase === "idle" && (
-          <div className="idle-screen">
-            <div className="mode-toggle">
-              <button className={`mode-btn ${inputMode === "zip" ? "mode-btn--active" : ""}`} onClick={() => { setInputMode("zip"); setInputPath(null); }}>
-                <ZipIcon /> {t.inputZip}
+          <div className="screen">
+          <div className="screen-inner">
+            <div className="src-tabs">
+              <button
+                type="button"
+                className={`src-tab ${inputMode === "zip" ? "on" : ""}`}
+                onClick={() => { setInputMode("zip"); setInputPath(null); }}
+              >
+                {Icon.zip({ size: 15 })} {t.inputZip}
               </button>
-              <button className={`mode-btn ${inputMode === "folder" ? "mode-btn--active" : ""}`} onClick={() => { setInputMode("folder"); setInputPath(null); }}>
-                <FolderIcon /> {t.inputFolder}
+              <button
+                type="button"
+                className={`src-tab ${inputMode === "folder" ? "on" : ""}`}
+                onClick={() => { setInputMode("folder"); setInputPath(null); }}
+              >
+                {Icon.folder({ size: 15 })} {t.inputFolder}
               </button>
             </div>
 
-            <div className={`dropzone ${isDragging ? "dropzone--active" : ""} ${inputPath ? "dropzone--selected" : ""}`} onClick={!inputPath ? pickInput : undefined}>
+            <div className={`dropzone ${isDragging ? "drag" : ""} ${inputPath ? "filled" : ""}`} onClick={!inputPath ? pickInput : undefined}>
               {!inputPath ? (
                 <>
-                  <div className="dropzone-icon">{inputMode === "zip" ? "↓" : "⌂"}</div>
-                  <p className="dropzone-title">{inputMode === "zip" ? t.dropZip : t.dropFolder}</p>
-                  <p className="dropzone-sub">{inputMode === "zip" ? t.browseZip : t.browseFolder}</p>
+                  <div className="dz-arrow">{Icon.arrowDown({ size: 22 })}</div>
+                  <div className="dz-title">{inputMode === "zip" ? t.dropZip : t.dropFolder}</div>
+                  <div className="dz-sub">{inputMode === "zip" ? t.browseZip : t.browseFolder}</div>
                 </>
               ) : (
                 <>
-                  <div className="dropzone-icon dropzone-icon--ok">✓</div>
-                  <p className="dropzone-title dropzone-path">{inputPath}</p>
-                  <button className="btn-ghost" onClick={(event) => { event.stopPropagation(); setInputPath(null); }}>
-                    {inputMode === "zip" ? t.changeFile : t.changeFolder}
+                  <div className="dz-check">{Icon.check({ size: 30 })}</div>
+                  <div className="dz-file">{inputPath}</div>
+                  <button className="btn btn-ghost" onClick={(event) => { event.stopPropagation(); setInputPath(null); }}>
+                    {Icon.edit({ size: 15 })} {inputMode === "zip" ? t.changeFile : t.changeFolder}
                   </button>
                 </>
               )}
             </div>
 
-            <div className="options-card">
-              <div className="options-card-title">{extraCleanupTitle}</div>
+            <div className="card cleanup-card">
+              <div className="eyebrow section-label">{extraCleanupTitle}</div>
 
-              <label className="option-row">
-                <input
-                  type="checkbox"
-                  checked={removeUnused}
-                  onChange={(event) => setRemoveUnused(event.target.checked)}
-                />
-                <span className="option-copy">
-                  <span className="option-label">{removeUnusedLabel}</span>
-                  <span className="option-hint">{removeUnusedHint}</span>
-                </span>
-              </label>
+              <div className="check-row" onClick={() => setRemoveUnused(!removeUnused)} style={{ cursor: "pointer" }}>
+                <div className={`checkbox ${removeUnused ? "on" : ""}`}>{Icon.check({ size: 13, sw: 2.6 })}</div>
+                <div className="check-txt">
+                  <div className="t">{removeUnusedLabel}</div>
+                  <div className="d">{removeUnusedHint}</div>
+                </div>
+              </div>
 
-              <label className="option-row">
-                <input
-                  type="checkbox"
-                  checked={dedupeImages}
-                  onChange={(event) => setDedupeImages(event.target.checked)}
-                />
-                <span className="option-copy">
-                  <span className="option-label">{dedupeLabel}</span>
-                  <span className="option-hint">{dedupeHint}</span>
-                </span>
-              </label>
+              <div className="check-row" onClick={() => setDedupeImages(!dedupeImages)} style={{ cursor: "pointer" }}>
+                <div className={`checkbox ${dedupeImages ? "on" : ""}`}>{Icon.check({ size: 13, sw: 2.6 })}</div>
+                <div className="check-txt">
+                  <div className="t">{dedupeLabel}</div>
+                  <div className="d">{dedupeHint}</div>
+                </div>
+              </div>
 
-              <label className="option-row">
-                <input
-                  type="checkbox"
-                  checked={strictBudgetEnabled}
-                  onChange={(event) => setStrictBudgetEnabled(event.target.checked)}
-                />
-                <span className="option-copy">
-                  <span className="option-label">{strictBudgetLabel}</span>
-                  <span className="option-hint">{strictBudgetHint}</span>
-                </span>
-              </label>
+              <div className="check-row" onClick={() => setStrictBudgetEnabled(!strictBudgetEnabled)} style={{ cursor: "pointer" }}>
+                <div className={`checkbox ${strictBudgetEnabled ? "on" : ""}`}>{Icon.check({ size: 13, sw: 2.6 })}</div>
+                <div className="check-txt">
+                  <div className="t">{strictBudgetLabel}</div>
+                  <div className="d">{strictBudgetHint}</div>
+                </div>
+              </div>
 
               {strictBudgetEnabled && (
-                <div className="option-inline">
-                  <span className="option-inline-label">{strictBudgetInputLabel}</span>
-                  <input
-                    className="option-inline-input"
-                    type="number"
+                <div className="check-row" style={{ alignItems: "center", paddingLeft: 33 }}>
+                  <span className="cap-mono" style={{ color: "var(--text-dim)" }}>{strictBudgetInputLabel}</span>
+                  <NumberStepper
+                    value={strictBudgetMbSafe}
                     min={1}
                     max={2048}
                     step={1}
-                    value={strictBudgetMbSafe}
-                    onChange={(event) => {
-                      const next = Number(event.target.value);
-                      if (!Number.isFinite(next)) return;
-                      setStrictBudgetMb(Math.min(2048, Math.max(1, Math.round(next))));
-                    }}
+                    aria-label={strictBudgetInputLabel}
+                    onChange={(next) => setStrictBudgetMb(Math.min(2048, Math.max(1, Math.round(next))))}
                   />
                 </div>
               )}
             </div>
 
             <div className="actions">
-              <button className="btn-primary" disabled={!inputPath} onClick={runAll}>
+              <button className="btn btn-primary btn-uppercase" disabled={!inputPath} onClick={runAll}>
                 {inputMode === "zip" ? t.runZip : t.runFolder}
               </button>
-              <button className="btn-ghost" onClick={runQuickBatch}>
+              <button className="btn btn-ghost" onClick={runQuickBatch}>
                 {quickOptimizeLabel}
               </button>
             </div>
           </div>
+          </div>
         )}
 
         {(phase === "preparing" || phase === "running" || phase === "exporting" || phase === "batching") && (
-          <div className="running running--full">
-            <div className="running-label">
-              {phase === "preparing" && (inputMode === "zip" ? t.phasePreparingZip : t.phasePreparingFolder)}
-              {phase === "running" && t.phaseRunning}
-              {phase === "exporting" && (exportMode === "zip" ? t.phaseExportZip : t.phaseExportFolder)}
-              {phase === "batching" && quickOptimizeLabel}
-            </div>
-            <div className="running-status">{progress.status}</div>
-            <div className="progress-track">
-              <div className="progress-fill" style={{ width: (phase === "preparing" || phase === "exporting") ? "100%" : `${progress.percent}%` }} />
-            </div>
-            <div className="progress-label">
-              {(phase === "running" || phase === "batching") && progress.total > 0 ? t.filesProgress(progress.done, progress.total, progress.percent) : ""}
-            </div>
-
-            <div className="progress-actions">
-              {phase === "batching" && (
-                <button
-                  className={`icon-action-btn ${batchPaused ? "icon-action-btn--paused" : ""}`}
-                  onClick={() => void toggleBatchPause()}
-                  aria-label={batchPaused ? resumeLabel : pauseLabel}
-                  title={batchPaused ? resumeLabel : pauseLabel}
-                >
-                  <span className="icon-action-btn-core">
-                    {batchPaused ? (
-                      <svg viewBox="0 0 24 24" className="icon-action-svg" aria-hidden="true">
-                        <path d="M9 7.5L16 12l-7 4.5z" fill="currentColor" />
-                      </svg>
-                    ) : (
-                      <svg viewBox="0 0 24 24" className="icon-action-svg" aria-hidden="true">
-                        <rect x="8" y="7" width="2.75" height="10" rx="1" fill="currentColor" />
-                        <rect x="13.25" y="7" width="2.75" height="10" rx="1" fill="currentColor" />
-                      </svg>
-                    )}
-                  </span>
-                </button>
-              )}
-              {isBusyPhase && (
-                <button
-                  className="icon-action-btn icon-action-btn--danger"
-                  onClick={() => void stopActiveWork()}
-                  aria-label={stopLabel}
-                  title={stopLabel}
-                >
-                  <span className="icon-action-btn-core">
-                    <svg viewBox="0 0 24 24" className="icon-action-svg" aria-hidden="true">
-                      <rect x="8" y="8" width="8" height="8" rx="1.6" fill="currentColor" />
-                    </svg>
-                  </span>
-                </button>
-              )}
-            </div>
+          <div className="screen">
+          <div className="screen-inner">
+            {(phase === "running" || phase === "batching") ? (
+              <>
+                <div className="opt-head">
+                  <div className="opt-status">{progress.status || (phase === "batching" ? quickOptimizeLabel : t.phaseRunning)}</div>
+                  <div className="opt-pct">{Math.floor(progress.percent)}<span style={{ fontSize: 16, color: "var(--text-faint)" }}>%</span></div>
+                </div>
+                <div className="opt-bar">
+                  <i style={{ width: `${progress.percent}%` }} />
+                </div>
+                <WorkerPool
+                  percent={progress.percent}
+                  done={progress.done}
+                  total={progress.total}
+                  recentFiles={[...floatingFiles.map((f) => f.name), ...(currentFile ? [currentFile] : [])]}
+                  threads={lanes.length || workerThreads}
+                  lanes={lanes.length ? lanes : undefined}
+                  running={!batchPaused}
+                  locale={locale}
+                />
+              </>
+            ) : (
+              <>
+                <div className="eyebrow section-label" style={{ marginTop: 4 }}>
+                  {phase === "preparing" && (inputMode === "zip" ? t.phasePreparingZip : t.phasePreparingFolder)}
+                  {phase === "exporting" && (exportMode === "zip" ? t.phaseExportZip : t.phaseExportFolder)}
+                </div>
+                <div className="opt-head">
+                  <div className="opt-status">{progress.status || t.optimizerStarting}</div>
+                </div>
+                <div className="opt-bar">
+                  <i style={{ width: "100%" }} />
+                </div>
+                <div className="canvas-wrap" style={{ display: "grid", placeItems: "center" }}>
+                  <div className="mono" style={{ color: "var(--text-faint)", fontSize: 12 }}>{currentFile || progress.status}</div>
+                </div>
+              </>
+            )}
 
             {phase === "batching" && batchPaused && (
-              <div className="pause-banner">{pausedStateLabel}</div>
+              <div className="pause-banner" style={{ marginTop: 14 }}>{pausedStateLabel}</div>
             )}
 
-            {(phase === "running" || phase === "batching") && progress.total > 0 && (
-              <div className="running-stats">
-                <div className="running-stat">
-                  <span className="running-stat-value">{progress.total}</span>
-                  <span className="running-stat-label">{t.queued}</span>
-                </div>
-                <div className="running-stat">
-                  <span className="running-stat-value">{progress.done}</span>
-                  <span className="running-stat-label">{t.processed}</span>
-                </div>
-                <div className="running-stat">
-                  <span className="running-stat-value">{progress.total - progress.done}</span>
-                  <span className="running-stat-label">{t.left}</span>
-                </div>
+            <div className="actions" style={{ justifyContent: "space-between", alignItems: "center" }}>
+              <div className="opt-path">{inputPath}</div>
+              <div style={{ display: "flex", gap: 10 }}>
+                {phase === "batching" && (
+                  <button className="cancel-btn" style={{ color: "var(--mint-deep)", borderColor: "var(--mint-line)" }} onClick={() => void toggleBatchPause()}>
+                    {batchPaused ? resumeLabel : pauseLabel}
+                  </button>
+                )}
+                {isBusyPhase && (
+                  <button className="cancel-btn" onClick={() => void stopActiveWork()}>
+                    {Icon.stop({ size: 11 })} {stopLabel}
+                  </button>
+                )}
               </div>
-            )}
-
-            {(phase === "running" || phase === "batching") && (
-              <div className="floating-arena">
-                {floatingFiles.map((file) => (
-                  <div key={file.id} className="floating-file" style={{ left: `${file.x}%`, top: `${file.y}%` }}>
-                    <span className="floating-file-icon">•</span>
-                    <span className="floating-file-name">{file.name}</span>
-                  </div>
-                ))}
-                {currentFile && <div className="current-file-label">{currentFile}</div>}
-              </div>
-            )}
-
-            <div className="progress-path">{inputPath}</div>
+            </div>
+          </div>
           </div>
         )}
 
         {phase === "reviewing" && result && (
-          <>
-            <div className="result-summary">
-              <div className="result-hero">
-                <span className="result-hero-label">{t.saved}</span>
-                <span className="result-hero-value">{formatBytes(result.savedBytes)}</span>
+          <div className="screen">
+          <div className="screen-inner">
+            <div className="card stat-strip">
+              <div className="stat">
+                <div className="big mint">{formatBytes(result.savedBytes)}</div>
+                <div className="meta"><div className="lab">{t.saved}</div></div>
               </div>
-              <div className="result-stats">
-                <div className="stat">
-                  <span className="stat-value stat-value--teal">{result.converted}</span>
-                  <span className="stat-label">{t.compressed}</span>
-                </div>
-                <div className="stat-divider" />
-                <div className="stat">
-                  <span className="stat-value stat-value--red">{result.deleted}</span>
-                  <span className="stat-label">{t.deleted}</span>
-                </div>
-                <div className="stat-divider" />
-                <div className="stat">
-                  <span className="stat-value">{result.replacedFiles}</span>
-                  <span className="stat-label">{t.filesUpdated}</span>
-                </div>
+              <div className="stat">
+                <div className="big">{result.converted}</div>
+                <div className="meta"><div className="lab">{t.compressed}</div></div>
+              </div>
+              <div className="stat">
+                <div className="big red">{result.deleted}</div>
+                <div className="meta"><div className="lab">{t.deleted}</div></div>
+              </div>
+              <div className="stat">
+                <div className="big">{result.replacedFiles}</div>
+                <div className="meta"><div className="lab">{t.filesUpdated}</div></div>
               </div>
             </div>
 
-            <div className="review-callout">
-              <span className="review-callout-icon">✦</span>
-              <div className="review-callout-body">
-                <p className="review-callout-title">{t.reviewTitle}</p>
-                <p className="review-callout-path">{workDir}</p>
-                <p className="review-callout-hint">{t.reviewHint}</p>
+            <div className="card info-card">
+              <div className="ic">{Icon.spark({ size: 20 })}</div>
+              <div className="grow">
+                <div className="t">{t.reviewTitle}</div>
+                <div className="p">{workDir}</div>
+                <div className="d">{t.reviewHint}</div>
               </div>
             </div>
 
-            <div className="report-shortcut-card">
-              <div className="report-shortcut-copy">
-                <span className="report-shortcut-eyebrow">{reportOverviewLabel}</span>
-                <h3 className="report-shortcut-title">{reportTitle}</h3>
-                <p className="report-shortcut-text">{reportDetailHint}</p>
+            <div className="card report-card">
+              <div className="rc-ic">{Icon.doc({ size: 19 })}</div>
+              <div className="grow">
+                <div className="eyebrow">{reportOverviewLabel}</div>
+                <div className="h" style={{ marginTop: 6 }}>{reportTitle}</div>
+                <div className="d">{reportDetailHint}</div>
               </div>
-              <button className="btn-primary" onClick={() => void openDetailedReport()}>{openReportLabel}</button>
+              <button className="btn-report" onClick={() => void openDetailedReport()}>
+                {openReportLabel} {Icon.arrowRight({ size: 15 })}
+              </button>
             </div>
 
-            <div className="export-picker">
-              <span className="export-picker-label">{t.exportFormat}</span>
-              <div className="mode-toggle">
-                <button className={`mode-btn ${exportMode === "zip" ? "mode-btn--active" : ""}`} onClick={() => setExportMode("zip")}>
-                  <ZipIcon /> {t.inputZip}
+            <div className="card export-card">
+              <div className="eyebrow section-label">{t.exportFormat}</div>
+              <div className="fmt-list">
+                <button
+                  type="button"
+                  className={`fmt-row ${exportMode === "zip" ? "on" : ""}`}
+                  onClick={() => setExportMode("zip")}
+                >
+                  <span className="fmt-radio" />
+                  <span className="fmt-ic">{Icon.zip({ size: 18 })}</span>
+                  <span className="fmt-meta">
+                    <span className="fmt-t">{t.inputZip}</span>
+                    <span className="fmt-p mono">{t.outputZip(`${inputPath?.replace(/(\.[^.]+)?$/, "") ?? "…"}_optimized.zip`)}</span>
+                  </span>
+                  <span className="fmt-tag mono">.zip</span>
                 </button>
-                <button className={`mode-btn ${exportMode === "folder" ? "mode-btn--active" : ""}`} onClick={() => setExportMode("folder")}>
-                  <FolderIcon /> {t.inputFolder}
+                <button
+                  type="button"
+                  className={`fmt-row ${exportMode === "folder" ? "on" : ""}`}
+                  onClick={() => setExportMode("folder")}
+                >
+                  <span className="fmt-radio" />
+                  <span className="fmt-ic">{Icon.folder({ size: 18 })}</span>
+                  <span className="fmt-meta">
+                    <span className="fmt-t">{t.inputFolder}</span>
+                    <span className="fmt-p mono">{t.outputFolder(`${inputPath?.replace(/(\.[^.]+)?$/, "") ?? "…"}_optimized/`)}</span>
+                  </span>
+                  <span className="fmt-tag mono">dir</span>
                 </button>
-              </div>
-              <div className="export-picker-hint">
-                {exportMode === "zip"
-                  ? t.outputZip(`${inputPath?.replace(/(\.[^.]+)?$/, "") ?? "…"}_optimized.zip`)
-                  : t.outputFolder(`${inputPath?.replace(/(\.[^.]+)?$/, "") ?? "…"}_optimized/`)}
               </div>
             </div>
 
             <div className="actions">
-              <button className="btn-primary" onClick={doExport}>
-                {exportMode === "zip" ? t.exportZip : t.exportFolder}
+              <button className="btn btn-primary btn-uppercase" onClick={doExport}>
+                {Icon.download({ size: 16 })} {exportMode === "zip" ? t.exportZip : t.exportFolder}
               </button>
-              <button className="btn-ghost" onClick={() => void reset()}>{t.cancel}</button>
+              <button className="btn btn-ghost" onClick={() => void reset()}>{t.cancel}</button>
             </div>
-          </>
+          </div>
+          </div>
         )}
 
         {phase === "done" && (
-          <div className="done-state">
-            <div className="done-icon">✓</div>
-            <p className="done-title">{t.exportDone}</p>
-            <p className="done-path">{outputPath}</p>
-            <p className="done-hint">{exportMode === "zip" ? t.exportDoneZip : t.exportDoneFolder}</p>
-            {autoCloseSeconds !== null && <p className="done-hint done-hint--countdown">{autoCloseHint}</p>}
-            <div className="actions actions--center">
-              <button className="btn-primary" onClick={() => void openDetailedReport()}>{openReportLabel}</button>
-              <button className="btn-ghost" onClick={() => void reset()}>{t.optimizeAnother}</button>
+          <div className="screen">
+          <div className="screen-inner">
+            <div className="done-wrap">
+              <div className="done-ring">{Icon.check({ size: 42, sw: 2 })}</div>
+              <div className="done-title">{t.exportDone}</div>
+              <div className="done-file">{outputPath}</div>
+              <div className="done-sub">{exportMode === "zip" ? t.exportDoneZip : t.exportDoneFolder}</div>
+
+              <button className="btn-report done-report" onClick={() => void openDetailedReport()}>
+                {Icon.doc({ size: 15 })} {openReportLabel} {Icon.arrowRight({ size: 14 })}
+              </button>
+
+              {autoCloseSeconds !== null && <div className="done-sub">{autoCloseHint}</div>}
+
+              <div className="done-actions">
+                <button className="btn btn-ghost" onClick={() => void reset()}>
+                  {Icon.refresh({ size: 15 })} {t.optimizeAnother}
+                </button>
+                <button className="btn btn-orange" onClick={() => void invoke("quit_app")}>
+                  {Icon.x({ size: 16, sw: 2.2 })} {settingsClose}
+                </button>
+              </div>
             </div>
+          </div>
           </div>
         )}
 
         {phase === "batchDone" && (
-          <div className="done-state">
-            <div className="done-icon">✓</div>
-            <p className="done-title">{quickSummaryTitle}</p>
-            <p className="done-hint">{quickSummaryHint}</p>
-            <div className="result-summary batch-summary">
-              <div className="result-hero">
-                <span className="result-hero-label">{t.saved}</span>
-                <span className="result-hero-value">{formatBytes(batchSavedBytes)}</span>
-              </div>
-              <div className="result-stats">
+          <div className="screen">
+          <div className="screen-inner">
+            <div className="done-wrap" style={{ justifyContent: "flex-start", paddingTop: 24 }}>
+              <div className="done-ring">{Icon.check({ size: 42, sw: 2 })}</div>
+              <div className="done-title">{quickSummaryTitle}</div>
+              <div className="done-sub">{quickSummaryHint}</div>
+
+              <div className="card stat-strip" style={{ marginTop: 24 }}>
                 <div className="stat">
-                  <span className="stat-value stat-value--teal">{batchSuccessCount}</span>
-                  <span className="stat-label">{locale === "ru" ? "\u0443\u0441\u043f\u0435\u0448\u043d\u043e" : "success"}</span>
+                  <div className="big mint">{formatBytes(batchSavedBytes)}</div>
+                  <div className="meta"><div className="lab">{t.saved}</div></div>
                 </div>
-                <div className="stat-divider" />
                 <div className="stat">
-                  <span className="stat-value stat-value--red">{batchErrorCount}</span>
-                  <span className="stat-label">{locale === "ru" ? "\u0441 \u043e\u0448\u0438\u0431\u043a\u0430\u043c\u0438" : "with errors"}</span>
+                  <div className="meta"><div className="lab">{locale === "ru" ? "\u0443\u0441\u043f\u0435\u0448\u043d\u043e" : "success"}</div></div>
+                </div>
+                <div className="stat">
+                  <div className="big red">{batchErrorCount}</div>
+                  <div className="meta"><div className="lab">{locale === "ru" ? "\u0441 \u043e\u0448\u0438\u0431\u043a\u0430\u043c\u0438" : "with errors"}</div></div>
                 </div>
               </div>
-            </div>
-            <div className="report-shortcut-card report-shortcut-card--batch">
-              <div className="report-shortcut-copy">
-                <span className="report-shortcut-eyebrow">{reportSiteLabel}</span>
-                <h3 className="report-shortcut-title">{batchResults.length} {locale === "ru" ? "\u0441\u0430\u0439\u0442\u043e\u0432 \u0432 \u043e\u0442\u0447\u0435\u0442\u0435" : "sites in report"}</h3>
-                <p className="report-shortcut-text">{reportDetailHint}</p>
+
+              <button className="btn-report done-report" onClick={() => void openDetailedReport()}>
+                {Icon.doc({ size: 15 })} {batchResults.length} {locale === "ru" ? "\u0441\u0430\u0439\u0442\u043e\u0432 \u0432 \u043e\u0442\u0447\u0435\u0442\u0435" : "sites in report"} {Icon.arrowRight({ size: 14 })}
+              </button>
+
+              {autoCloseSeconds !== null && <div className="done-sub">{autoCloseHint}</div>}
+
+              <div className="done-actions">
+                <button className="btn btn-ghost" onClick={() => void reset()}>
+                  {Icon.refresh({ size: 15 })} {t.optimizeAnother}
+                </button>
               </div>
-              <button className="btn-primary" onClick={() => void openDetailedReport()}>{openReportLabel}</button>
             </div>
-            {autoCloseSeconds !== null && <p className="done-hint done-hint--countdown">{autoCloseHint}</p>}
-            <div className="actions actions--center">
-              <button className="btn-ghost" onClick={() => void reset()}>{t.optimizeAnother}</button>
-            </div>
+          </div>
           </div>
         )}
         {phase === "error" && (
-          <div className="error-state">
-            <div className="error-icon">⚠</div>
-            <p className="error-msg">{errorMsg}</p>
-            {runtimeDebug.length > 0 && (
-              <div className="debug-panel">
-                <div className="debug-panel-title">Runtime debug</div>
-                {runtimeDebug.map((line) => (
-                  <div key={line} className="debug-line">{line}</div>
-                ))}
+          <div className="screen">
+          <div className="screen-inner">
+            <div className="done-wrap">
+              <div className="done-ring" style={{ background: "var(--danger-soft)", borderColor: "oklch(0.55 0.17 27 / 0.35)", color: "var(--danger)" }}>
+                {Icon.alert({ size: 40 })}
               </div>
-            )}
-            <button className="btn-ghost" onClick={() => void reset()}>{t.tryAgain}</button>
+              <div className="done-title">{locale === "ru" ? "Что-то пошло не так" : "Something went wrong"}</div>
+              <div className="done-sub" style={{ maxWidth: "52ch" }}>{errorMsg}</div>
+              {runtimeDebug.length > 0 && (
+                <div className="card" style={{ marginTop: 18, padding: "14px 16px", textAlign: "left", maxWidth: 560, width: "100%" }}>
+                  <div className="eyebrow section-label">Runtime debug</div>
+                  {runtimeDebug.map((line) => (
+                    <div key={line} className="mono" style={{ fontSize: 11.5, color: "var(--text-faint)", padding: "2px 0" }}>{line}</div>
+                  ))}
+                </div>
+              )}
+              <div className="done-actions">
+                <button className="btn btn-ghost" onClick={() => void reset()}>
+                  {Icon.refresh({ size: 15 })} {t.tryAgain}
+                </button>
+              </div>
+            </div>
+          </div>
           </div>
         )}
         {isReportOpen && (phase === "reviewing" || phase === "done" || phase === "batchDone") && (
-          <div className="modal-backdrop" onClick={() => void closeDetailedReport()}>
-            <div className="modal-card modal-card--report" onClick={(event) => event.stopPropagation()}>
-              <div className="modal-head">
-                <h3>{reportTitle}</h3>
-                <button type="button" className="modal-close" onClick={() => void closeDetailedReport()}>×</button>
-              </div>
+          <div className="scrim" onClick={() => void closeDetailedReport()}>
+            <div className="modal report-modal" onClick={(event) => event.stopPropagation()}>
+              <button type="button" className="x-btn report-x" onClick={() => void closeDetailedReport()}>{Icon.x({ size: 16 })}</button>
 
-              {phase === "reviewing" && result && renderReportInspector(result.report, result.referencedAssets ?? [], reviewBreakdown, reviewReferencedBreakdown, {
+              {phase === "reviewing" && result && renderReportTwoPane(result.report, result.referencedAssets ?? [], reviewBreakdown, reviewReferencedBreakdown, {
                 title: inputPath ?? (locale === "ru" ? "Текущий сайт" : "Current site"),
-                output: workDir ?? undefined,
                 savedBytes: result.savedBytes,
-                converted: result.converted,
-                deleted: result.deleted,
-                replacedFiles: result.replacedFiles
+                converted: result.converted
               })}
 
-              {phase === "done" && result && renderReportInspector(result.report, result.referencedAssets ?? [], reviewBreakdown, reviewReferencedBreakdown, {
+              {phase === "done" && result && renderReportTwoPane(result.report, result.referencedAssets ?? [], reviewBreakdown, reviewReferencedBreakdown, {
                 title: inputPath ?? (locale === "ru" ? "Текущий сайт" : "Current site"),
-                output: outputPath ?? undefined,
                 savedBytes: result.savedBytes,
-                converted: result.converted,
-                deleted: result.deleted,
-                replacedFiles: result.replacedFiles
+                converted: result.converted
               })}
 
               {phase === "batchDone" && (
-                <div className="report-modal-layout">
-                  <div className="report-modal-sites">
-                    <div className="report-detail-title">{reportSiteLabel}</div>
-                    <div className="report-list report-list--compact">
-                      {batchResults.map((item, index) => (
-                        <button
-                          type="button"
-                          key={`report-modal-${item.input}-${index}`}
-                          className={`report-item report-item--button ${item.success ? "" : "report-item--error"} ${activeBatchIndex === index ? "report-item--active" : ""}`}
-                          onClick={() => setActiveBatchIndex(index)}
-                        >
-                          <span className="report-file">{item.input}</span>
-                          <span className="report-meta">
-                            {item.success
-                              ? `${formatBytes(item.savedBytes ?? 0)} · ${item.converted ?? 0} / ${item.deleted ?? 0}`
-                              : (item.error ?? "Error")}
-                          </span>
-                        </button>
-                      ))}
-                    </div>
+                <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
+                  <div className="rtabs" style={{ padding: "18px 26px 0", flexWrap: "wrap", borderBottom: "none" }}>
+                    {batchResults.map((item, index) => (
+                      <button
+                        type="button"
+                        key={`report-site-${item.input}-${index}`}
+                        className={`rtab ${activeBatchIndex === index ? "on" : ""}`}
+                        onClick={() => setActiveBatchIndex(index)}
+                      >
+                        {item.success ? Icon.check({ size: 13 }) : Icon.alert({ size: 13 })}
+                        {item.input.split(/[\\/]/).pop() ?? item.input}
+                      </button>
+                    ))}
                   </div>
-
-                  {activeBatchItem && renderReportInspector(activeBatchItem.report ?? [], activeBatchItem.referencedAssets ?? [], activeBatchBreakdown, activeBatchReferencedBreakdown, {
+                  {activeBatchItem && renderReportTwoPane(activeBatchItem.report ?? [], activeBatchItem.referencedAssets ?? [], activeBatchBreakdown, activeBatchReferencedBreakdown, {
                     title: activeBatchItem.input,
-                    output: activeBatchItem.output,
-                    hint: activeBatchItem.success ? undefined : activeBatchItem.error,
                     savedBytes: activeBatchItem.savedBytes ?? 0,
-                    converted: activeBatchItem.converted ?? 0,
-                    deleted: activeBatchItem.deleted ?? 0,
-                    replacedFiles: activeBatchItem.replacedFiles
+                    converted: activeBatchItem.converted ?? 0
                   })}
                 </div>
               )}
 
-              <div className="modal-actions">
-                <button className="btn-primary" onClick={() => void closeDetailedReport()}>
+              <div className="modal-foot">
+                <span className="foot-note mono">{locale === "ru" ? "Сканирование завершено" : "Scan complete"} · {result?.referencedAssets?.length ?? 0} {locale === "ru" ? "ссылок проверено" : "links checked"}</span>
+                <button className="btn btn-primary btn-uppercase" onClick={() => void closeDetailedReport()}>
                   {reportCloseLabel}
                 </button>
               </div>
@@ -2143,44 +2385,32 @@ export default function App() {
         )}
 
         {isSettingsOpen && (
-          <div className="modal-backdrop" onClick={() => setIsSettingsOpen(false)}>
-            <div className="modal-card" onClick={(event) => event.stopPropagation()}>
+          <div className="scrim" onClick={() => setIsSettingsOpen(false)}>
+            <div className="modal modal-sm" onClick={(event) => event.stopPropagation()}>
               <div className="modal-head">
-                <h3>{settingsTitle}</h3>
-                <button type="button" className="modal-close" onClick={() => setIsSettingsOpen(false)}>×</button>
+                <h2>{settingsTitle}</h2>
+                <button type="button" className="x-btn" onClick={() => setIsSettingsOpen(false)}>{Icon.x({ size: 16 })}</button>
               </div>
 
-              <div className="modal-section">
-                <div className="modal-section-title">{contextMenuTitle}</div>
+              <div className="set-section">
+                <div className="eyebrow section-label">{contextMenuTitle}</div>
 
-                <label className="option-row">
-                  <input
-                    type="checkbox"
-                    checked={contextMenuNormal}
-                    onChange={(event) => setContextMenuNormal(event.target.checked)}
-                  />
-                  <span className="option-copy">
-                    <span className="option-label">{contextNormalLabel}</span>
-                  </span>
-                </label>
+                <div className="check-row" onClick={() => setContextMenuNormal(!contextMenuNormal)} style={{ cursor: "pointer" }}>
+                  <div className={`checkbox ${contextMenuNormal ? "on" : ""}`}>{Icon.check({ size: 13, sw: 2.6 })}</div>
+                  <div className="check-txt"><div className="t">{contextNormalLabel}</div></div>
+                </div>
 
-                <label className="option-row">
-                  <input
-                    type="checkbox"
-                    checked={contextMenuQuick}
-                    onChange={(event) => setContextMenuQuick(event.target.checked)}
-                  />
-                  <span className="option-copy">
-                    <span className="option-label">{contextQuickLabel}</span>
-                  </span>
-                </label>
+                <div className="check-row" onClick={() => setContextMenuQuick(!contextMenuQuick)} style={{ cursor: "pointer" }}>
+                  <div className={`checkbox ${contextMenuQuick ? "on" : ""}`}>{Icon.check({ size: 13, sw: 2.6 })}</div>
+                  <div className="check-txt"><div className="t">{contextQuickLabel}</div></div>
+                </div>
               </div>
 
-              <div className="modal-actions">
-                <button className="btn-primary" disabled={isSavingSettings} onClick={() => void saveContextMenuSettings()}>
+              <div className="actions" style={{ paddingTop: 18 }}>
+                <button className="btn btn-primary btn-uppercase" disabled={isSavingSettings} onClick={() => void saveContextMenuSettings()}>
                   {settingsSave}
                 </button>
-                <button className="btn-ghost" onClick={() => setIsSettingsOpen(false)}>
+                <button className="btn btn-ghost" onClick={() => setIsSettingsOpen(false)}>
                   {settingsClose}
                 </button>
               </div>
@@ -2241,7 +2471,7 @@ export default function App() {
             </div>
           </div>
         )}
-      </main>
+      </div>
     </div>
   );
 }
