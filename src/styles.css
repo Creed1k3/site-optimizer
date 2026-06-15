@@ -278,7 +278,7 @@ html, body {
   box-shadow: var(--shadow-soft);
   transition: all .25s var(--ease);
 }
-.icon-btn:hover { border-color: var(--line-strong); color: var(--mint-deep); transform: rotate(35deg); }
+.icon-btn:hover { border-color: var(--mint-line); background: var(--mint-soft); color: var(--mint-deep); }
 .version { font-family: var(--mono); font-size: 11px; color: var(--text-ghost); letter-spacing: 0.05em; }
 
 /* ---------- main area ---------- */

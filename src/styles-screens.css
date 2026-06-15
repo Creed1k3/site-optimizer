@@ -345,6 +345,55 @@
 .x-btn:hover { color: var(--text); border-color: var(--line-strong); }
 
 /* ============================================================
+   what's new  ·  post-update highlight modal
+   ============================================================ */
+.whatsnew-modal {
+  position: relative;
+  width: min(580px, 100%);
+  max-height: calc(100% - 8px);
+  overflow-y: auto;
+  padding: 30px 32px;
+}
+.whatsnew-x { position: absolute; top: 18px; right: 18px; }
+.whatsnew-sub { font-size: 13.5px; color: var(--text-faint); margin: 6px 0 22px; }
+
+.whatsnew-sections { display: flex; flex-direction: column; gap: 18px; }
+
+.whatsnew-section {
+  display: flex; gap: 14px; align-items: flex-start;
+  opacity: 0;
+  animation: whatsnew-in .5s var(--ease) forwards;
+  animation-delay: calc(var(--i, 0) * 90ms + 90ms);
+}
+.whatsnew-icon {
+  flex: 0 0 auto; width: 38px; height: 38px;
+  display: grid; place-items: center;
+  border-radius: var(--radius);
+  background: var(--mint-soft); color: var(--mint-deep);
+  border: 1px solid var(--mint-line);
+}
+.whatsnew-body { flex: 1 1 auto; min-width: 0; }
+.whatsnew-heading { font-weight: 600; font-size: 14.5px; color: var(--text); margin-bottom: 6px; }
+
+.whatsnew-list { list-style: none; display: flex; flex-direction: column; gap: 6px; }
+.whatsnew-list li {
+  position: relative; padding-left: 14px;
+  font-size: 13px; line-height: 1.55; color: var(--text-dim);
+}
+.whatsnew-list li::before {
+  content: ""; position: absolute; left: 0; top: 0.62em;
+  width: 5px; height: 5px; border-radius: 50%;
+  background: var(--mint-line);
+}
+
+@keyframes whatsnew-in {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.whatsnew-actions { margin-top: 26px; display: flex; justify-content: flex-end; }
+
+/* ============================================================
    report modal  ·  two-pane premium
    ============================================================ */
 .report-modal {

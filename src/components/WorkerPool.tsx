@@ -64,12 +64,20 @@ function shortName(name: string): string {
   return name.split(/[\\/]/).pop() ?? name;
 }
 
+function pluralRu(n: number, one: string, few: string, many: string): string {
+  const mod10 = n % 10;
+  const mod100 = n % 100;
+  if (mod10 === 1 && mod100 !== 11) return one;
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return few;
+  return many;
+}
+
 const L = {
   ru: {
     eyebrow: (n: number) => `Параллельная оптимизация · ${n} ${n === 1 ? "поток" : n < 5 ? "потока" : "потоков"}`,
     threadId: (id: number) => `Поток ${id}`,
     ready: "готово",
-    filesN: (n: number) => `${n} файлов`,
+    filesN: (n: number) => `${n} ${pluralRu(n, "файл", "файла", "файлов")}`,
     processedN: (n: number) => `обработано · ${n}`,
     footProcessed: "обработано",
     footQueued: "в очереди",
@@ -79,7 +87,7 @@ const L = {
     eyebrow: (n: number) => `Parallel optimization · ${n} ${n === 1 ? "thread" : "threads"}`,
     threadId: (id: number) => `Thread ${id}`,
     ready: "done",
-    filesN: (n: number) => `${n} files`,
+    filesN: (n: number) => `${n} ${n === 1 ? "file" : "files"}`,
     processedN: (n: number) => `processed · ${n}`,
     footProcessed: "processed",
     footQueued: "queued",

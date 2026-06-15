@@ -232,6 +232,84 @@ const translations = {
   }
 } as const;
 
+interface WhatsNewSection {
+  icon: "max" | "spark" | "doc" | "gear";
+  heading: { ru: string; en: string };
+  items: { ru: string; en: string }[];
+}
+
+interface WhatsNewEntry {
+  title: { ru: string; en: string };
+  subtitle: { ru: string; en: string };
+  sections: WhatsNewSection[];
+}
+
+// "What's new" content shown once after upgrading to a new version.
+// Add an entry here per release that deserves a highlight screen.
+const WHATS_NEW: Record<string, WhatsNewEntry> = {
+  "0.7.1": {
+    title: { ru: "Что нового в v0.7.1", en: "What's new in v0.7.1" },
+    subtitle: {
+      ru: "Несколько улучшений интерфейса по вашим отзывам",
+      en: "A handful of interface improvements based on your feedback"
+    },
+    sections: [
+      {
+        icon: "max",
+        heading: { ru: "Окно приложения", en: "App window" },
+        items: [
+          {
+            ru: "Окно стало компактнее по ширине и выше — удобнее работать с отчётами и пакетной оптимизацией.",
+            en: "The window is now narrower and taller — more comfortable for reports and batch optimization."
+          }
+        ]
+      },
+      {
+        icon: "spark",
+        heading: { ru: "Пакетная оптимизация", en: "Batch optimization" },
+        items: [
+          {
+            ru: "Пул потоков теперь показывает реальный прогресс и реальные файлы вместо случайных данных.",
+            en: "The worker pool now shows real progress and real files instead of placeholder data."
+          },
+          {
+            ru: "Статусы оптимизации переведены на русский язык.",
+            en: "Optimization status messages are now localized."
+          },
+          {
+            ru: "Исправлено склонение «файл / файла / файлов» в карточках потоков.",
+            en: "Fixed file-count pluralization in worker cards."
+          },
+          {
+            ru: "На экране результатов пакетной оптимизации добавлена кнопка «Закрыть».",
+            en: "Added a Close button to the batch results screen."
+          }
+        ]
+      },
+      {
+        icon: "doc",
+        heading: { ru: "Подробный отчёт", en: "Detailed report" },
+        items: [
+          {
+            ru: "Отчёт теперь открывается в обычном окне без перехода в полноэкранный режим.",
+            en: "The report now opens in the normal window instead of going fullscreen."
+          }
+        ]
+      },
+      {
+        icon: "gear",
+        heading: { ru: "Настройки", en: "Settings" },
+        items: [
+          {
+            ru: "При наведении кнопка настроек просто подсвечивается синим — без эффекта «перечёркивания».",
+            en: "Hovering the settings button now simply highlights it in blue, without the crossed-out spin."
+          }
+        ]
+      }
+    ]
+  }
+};
+
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -244,6 +322,39 @@ function formatSpeed(bytesPerSecond: number, locale: Locale): string {
   }
 
   return `${formatBytes(Math.round(bytesPerSecond))}/${locale === "ru" ? "\u0441" : "s"}`;
+}
+
+// The sidecar emits a handful of plain-English progress status messages
+// (extraction/scan/optimize/etc.) regardless of UI locale — translate the
+// known ones for the Russian UI.
+function translateStatus(message: string, locale: Locale): string {
+  if (locale !== "ru" || !message) return message;
+
+  const exact: Record<string, string> = {
+    "Extracting ZIP...": "Извлечение ZIP…",
+    "Scanning files...": "Сканирование файлов…",
+    "Analysing code references...": "Анализ ссылок в коде…",
+    "Finding duplicate images...": "Поиск дублей изображений…",
+    "Strict pass finished: no more safe reductions found.": "Строгий проход завершён: больше нет безопасных сокращений.",
+    "Updating code references...": "Обновление ссылок в коде…",
+    "Removing unused assets...": "Удаление неиспользуемых файлов…",
+    "Packing ZIP...": "Сборка ZIP…",
+    "Copying to output folder...": "Копирование в выходную папку…",
+  };
+  if (exact[message]) return exact[message];
+
+  const optimizing = message.match(/^Optimizing (.+)\.\.\.$/);
+  if (optimizing) {
+    const summary = optimizing[1] === "0 files" ? "0 файлов" : optimizing[1];
+    return `Оптимизация: ${summary}…`;
+  }
+
+  const strict = message.match(/^Strict size mode enabled \(target: (\d+) MB\)$/);
+  if (strict) {
+    return `Строгий режим веса включён (цель: ${strict[1]} МБ)`;
+  }
+
+  return message;
 }
 
 function formatEta(seconds: number | null | undefined, locale: Locale): string {
@@ -445,6 +556,7 @@ export default function App() {
   const [updateProgress, setUpdateProgress] = useState<UpdateDownloadProgress | null>(null);
   const [closePromptOpen, setClosePromptOpen] = useState(false);
   const [isReportOpen, setIsReportOpen] = useState(false);
+  const [whatsNewVersion, setWhatsNewVersion] = useState<string | null>(null);
   const [batchPaused, setBatchPaused] = useState(false);
   const [autoCloseSeconds, setAutoCloseSeconds] = useState<number | null>(null);
   const [theme, setTheme] = useState<"light" | "dark">(() => {
@@ -663,6 +775,16 @@ export default function App() {
         launchModeRef.current = launchMode;
         if (launchMode !== "quick") {
           void checkForUpdates();
+
+          try {
+            const seenVersion = window.localStorage.getItem("site-optimizer-last-seen-version");
+            if (seenVersion && seenVersion !== __APP_VERSION__ && WHATS_NEW[__APP_VERSION__] && !cancelled) {
+              setWhatsNewVersion(__APP_VERSION__);
+            }
+            window.localStorage.setItem("site-optimizer-last-seen-version", __APP_VERSION__);
+          } catch {
+            // ignore storage access failures
+          }
         }
       } catch {
         // ignore launch mode lookup failures
@@ -916,7 +1038,7 @@ export default function App() {
     }
   }, []);
 
-  const optimizeSingleForBatch = async (path: string, mode: InputMode) => {
+  const optimizeSingleForBatch = async (path: string, mode: InputMode, batchIndex: number, batchTotal: number) => {
     const dir = mode === "zip"
       ? await invoke<string>("unzip_site", { zipPath: path })
       : await invoke<string>("prepare_folder", { folderPath: path });
@@ -928,11 +1050,36 @@ export default function App() {
             const data = JSON.parse(event.payload);
             switch (data.type) {
               case "status":
-                setProgress((state) => ({ ...state, status: data.message }));
+                setProgress((state) => ({ ...state, status: translateStatus(data.message, locale) }));
                 break;
-              case "progress":
+              case "classify_done":
+                setProgress((state) => ({ ...state, done: 0, total: data.toConvert + data.toDelete }));
+                break;
+              case "pool":
+                setLanes(Array.from({ length: Math.max(1, data.lanes) }, (_, i) => ({
+                  id: i, file: "", kind: "", pct: 0, filesDone: 0, active: false,
+                })));
+                break;
+              case "worker":
+                setLanes((prev) => {
+                  if (prev.length === 0) return prev;
+                  return prev.map((lane) => lane.id !== data.id ? lane : {
+                    id: data.id,
+                    file: data.file ?? lane.file,
+                    kind: data.kind ?? lane.kind,
+                    pct: data.state === "done" ? 100 : (data.pct ?? lane.pct),
+                    filesDone: data.state === "done" ? (data.filesDone ?? lane.filesDone) : lane.filesDone,
+                    active: data.state !== "done",
+                  });
+                });
+                break;
+              case "progress": {
+                const siteFraction = data.total ? data.done / data.total : 1;
+                const percent = Math.round(((batchIndex + siteFraction) / batchTotal) * 100);
+                setProgress((state) => ({ ...state, done: data.done, total: data.total, percent }));
                 if (data.file) spawnFloatingFile(data.file);
                 break;
+              }
               case "done":
                 off();
                 resolve(data as DonePayload);
@@ -1223,6 +1370,7 @@ export default function App() {
       const shortName = currentPath.split(/[\\/]/).pop() ?? currentPath;
       setInputPath(currentPath);
       setInputMode(mode);
+      setLanes([]);
       setProgress({
         done: index,
         total: paths.length,
@@ -1231,7 +1379,7 @@ export default function App() {
       });
 
       try {
-        const { out, donePayload } = await optimizeSingleForBatch(currentPath, mode);
+        const { out, donePayload } = await optimizeSingleForBatch(currentPath, mode, index, paths.length);
         if (stopRequestedRef.current) {
           break;
         }
@@ -1260,6 +1408,7 @@ export default function App() {
 
     setBatchResults(nextResults);
     setActiveBatchIndex(0);
+    setLanes([]);
     setProgress({
       done: nextResults.filter((item) => item.success).length,
       total: nextResults.length,
@@ -1605,23 +1754,13 @@ export default function App() {
     </div>
   );
 
-  const openDetailedReport = async () => {
+  const openDetailedReport = () => {
     setActiveTab("assets");
     setIsReportOpen(true);
-    try {
-      await invoke("maximize_main_window");
-    } catch {
-      // ignore window resize issues and still show the report
-    }
   };
 
-  const closeDetailedReport = async () => {
+  const closeDetailedReport = () => {
     setIsReportOpen(false);
-    try {
-      await invoke("restore_main_window");
-    } catch {
-      // ignore window resize issues on close
-    }
   };
 
   const renderReportInspector = (
@@ -2277,6 +2416,9 @@ export default function App() {
                 <button className="btn btn-ghost" onClick={() => void reset()}>
                   {Icon.refresh({ size: 15 })} {t.optimizeAnother}
                 </button>
+                <button className="btn btn-orange" onClick={() => void invoke("quit_app")}>
+                  {Icon.x({ size: 16, sw: 2.2 })} {settingsClose}
+                </button>
               </div>
             </div>
           </div>
@@ -2466,6 +2608,37 @@ export default function App() {
                 </button>
                 <button className="btn-ghost" disabled={isInstallingUpdate} onClick={() => { setUpdateInfo(null); setUpdateProgress(null); }}>
                   {updateLaterLabel}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+        {whatsNewVersion && WHATS_NEW[whatsNewVersion] && (
+          <div className="scrim" onClick={() => setWhatsNewVersion(null)}>
+            <div className="modal whatsnew-modal" onClick={(event) => event.stopPropagation()}>
+              <button type="button" className="x-btn whatsnew-x" onClick={() => setWhatsNewVersion(null)}>{Icon.x({ size: 16 })}</button>
+              <div className="modal-head">
+                <h2>{WHATS_NEW[whatsNewVersion].title[locale]}</h2>
+              </div>
+              <p className="whatsnew-sub">{WHATS_NEW[whatsNewVersion].subtitle[locale]}</p>
+              <div className="whatsnew-sections">
+                {WHATS_NEW[whatsNewVersion].sections.map((section, index) => (
+                  <div key={section.heading.en} className="whatsnew-section" style={{ "--i": index } as React.CSSProperties}>
+                    <div className="whatsnew-icon">{Icon[section.icon]({ size: 18 })}</div>
+                    <div className="whatsnew-body">
+                      <div className="whatsnew-heading">{section.heading[locale]}</div>
+                      <ul className="whatsnew-list">
+                        {section.items.map((item) => (
+                          <li key={item.en}>{item[locale]}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div className="whatsnew-actions">
+                <button className="btn btn-primary btn-uppercase" onClick={() => setWhatsNewVersion(null)}>
+                  {locale === "ru" ? "Отлично" : "Got it"}
                 </button>
               </div>
             </div>

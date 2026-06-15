@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.7.1
+
+- made the initial window slightly narrower and taller for a more comfortable layout
+- added a Close button to the batch optimization results screen
+- the detailed report now opens in the normal window instead of going fullscreen
+- settings button hover now highlights in blue instead of rotating into a crossed-out look
+- fixed "1 файлов" → "1 файл" pluralization in worker pool cards
+- quick-batch worker pool now shows real per-file progress and is fully localized to Russian
+- added a "what's new" highlight modal shown once after updating
+
 ## 0.7.0
 
 - new "Spark" blue icon set across the whole Tauri bundle (Windows, Store, macOS, iOS, Android)
