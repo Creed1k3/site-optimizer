@@ -1,11 +1,11 @@
 {
-    "version": "0.5.0",
-    "notes": "????? 0.5.0: ???????? ????? ?????? ?????? ??? ????????? ?????? ??????????.",
-    "pub_date": "2026-03-26T14:40:57+03:00",
-    "platforms": {
-        "windows-x86_64": {
-            "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTNFhsNG1vRTVvbUtMZUs2TmF1SVNSV2UrNTV6akJFR3RMTzhLQkhQZUxKMVJYbGVIYWJ4cTVuV3VhM1l5UXEzbmpDbkdDRFJ5V0ZBSmtVRTZxYll3WHdVTlNka0Y1TWdJPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzc0NTE2NTM3CWZpbGU6U2l0ZSBPcHRpbWl6ZXJfMC41LjBfeDY0LXNldHVwLmV4ZQo0am13K3p4WUQyQ1pYTVQyUGUwNmM0azI2Nys1Rm5XZ2k5NndNS2w3VGVHVnVzZ0lmakFWK3FaTE9JNGU3b1JHREpqdlhlVUNubXoxZDM0V1c4WHZCdz09Cg==",
-            "url": "https://github.com/Creed1k3/site-optimizer/releases/latest/download/installer.exe"
-        }
+  "version": "0.7.1",
+  "notes": "Site Optimizer 0.7.1\n\n• Окно стало компактнее по ширине и выше.\n• На экране результатов пакетной оптимизации добавлена кнопка «Закрыть».\n• Подробный отчёт открывается в обычном окне без полноэкранного режима.\n• Наведение на кнопку настроек теперь подсвечивает её синим, без эффекта «перечёркивания».\n• Исправлено склонение «файл / файла / файлов» в пуле потоков.\n• Пул потоков при пакетной оптимизации показывает реальный прогресс и переведён на русский язык.\n• Добавлено окно «Что нового» после обновления.",
+  "pub_date": "2026-06-15T16:51:51.000Z",
+  "platforms": {
+    "windows-x86_64": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTNFhsNG1vRTVvbVB3aFp5RHlKVnlLMjVpOG5LWWF4dCszNzFSeDU3T1YvYU5GMnIrN2M3M3hPNWRZUHNYZzdTREFoOFZBZFhkOHNyYlZvNEY4b1NmVVBuSmF5T3l4cHdjPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzgxNTQyMjc0CWZpbGU6U2l0ZSBPcHRpbWl6ZXJfMC43LjFfeDY0LXNldHVwLmV4ZQpzNUNZTWZyNUE0WW9RNUd2ejlaeXB2NDAvdHF2NEs2cVVnZ2hYMmxvS1NHdS8xelduY2RGZnQ1cXRQTnhtNUZpczFMem5mSC8wY2RWUUVha3BqaHFDdz09Cg==",
+      "url": "https://github.com/Creed1k3/site-optimizer/releases/latest/download/installer.exe"
     }
+  }
 }
