@@ -233,6 +233,15 @@ export function WorkerPool({ percent, done, total, recentFiles, threads, lanes, 
   }, [idle]);
 
   const useReal = !!lanes && lanes.length > 0;
+  // The sidecar sizes its pool to min(cpus, fileCount), so a folder with few
+  // files reports fewer lanes than the host has threads. Pad up to `threads`
+  // with idle placeholder lanes so the grid stays a stable size across folders
+  // in a batch instead of briefly collapsing to a single cell.
+  const displayLanes: PoolLane[] = useReal
+    ? Array.from({ length: threads }, (_, i) => lanes![i] ?? {
+        id: i, file: "", kind: "", pct: 0, filesDone: 0, active: false,
+      })
+    : [];
   const activeThreads = useReal ? lanes!.filter((l) => l.active && !idle).length : (idle ? 0 : threads);
   // distribute the real processed count across the visible workers (decorative mode only)
   const perWorker = (i: number) => Math.floor(done / threads) + (i < done % threads ? 1 : 0);
@@ -244,7 +253,7 @@ export function WorkerPool({ percent, done, total, recentFiles, threads, lanes, 
         <canvas ref={canvasRef} className="pool-canvas" />
         <div className="pool-grid" style={{ gridTemplateColumns: `repeat(${Math.min(threads, 4)}, 1fr)` }}>
           {useReal
-            ? lanes!.map((lane) => (
+            ? displayLanes.map((lane) => (
                 <RealWorkerCell
                   key={lane.id}
                   lane={idle ? { ...lane, active: false } : lane}

@@ -1,10 +1,10 @@
 {
-  "version": "0.7.1",
-  "notes": "Site Optimizer 0.7.1\n\n• Окно стало компактнее по ширине и выше.\n• На экране результатов пакетной оптимизации добавлена кнопка «Закрыть».\n• Подробный отчёт открывается в обычном окне без полноэкранного режима.\n• Наведение на кнопку настроек теперь подсвечивает её синим, без эффекта «перечёркивания».\n• Исправлено склонение «файл / файла / файлов» в пуле потоков.\n• Пул потоков при пакетной оптимизации показывает реальный прогресс и переведён на русский язык.\n• Добавлено окно «Что нового» после обновления.",
-  "pub_date": "2026-06-15T16:51:51.000Z",
+  "version": "0.7.2",
+  "notes": "Site Optimizer 0.7.2\n\n• Галочка при завершении потока теперь стоит ровно, а не повёрнута на бок.\n• Сетка потоков больше не схлопывается до одной ячейки между папками при пакетной оптимизации — количество потоков остаётся стабильным.",
+  "pub_date": "2026-06-18T15:22:11.000Z",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTNFhsNG1vRTVvbVB3aFp5RHlKVnlLMjVpOG5LWWF4dCszNzFSeDU3T1YvYU5GMnIrN2M3M3hPNWRZUHNYZzdTREFoOFZBZFhkOHNyYlZvNEY4b1NmVVBuSmF5T3l4cHdjPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzgxNTQyMjc0CWZpbGU6U2l0ZSBPcHRpbWl6ZXJfMC43LjFfeDY0LXNldHVwLmV4ZQpzNUNZTWZyNUE0WW9RNUd2ejlaeXB2NDAvdHF2NEs2cVVnZ2hYMmxvS1NHdS8xelduY2RGZnQ1cXRQTnhtNUZpczFMem5mSC8wY2RWUUVha3BqaHFDdz09Cg==",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTNFhsNG1vRTVvbUdwUWpHUVJTNFhGUTFPWmFkZ2t1a0FCNytpTGxDRnp3SnVzQ2ttTmVuNlF3MURMRDhCNG40b2R2d09aWEFCcVZNOFFDekw4ekhXWVN2SWJWNXlkU2c4PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzgxNzk2MTAyCWZpbGU6U2l0ZSBPcHRpbWl6ZXJfMC43LjJfeDY0LXNldHVwLmV4ZQpjd2dQbXI4cDVpeFNVQXk4RlR6d1hjU1Y5UVh4MHo1RjU5cG9rOUZPVldJZE96a2ZNcm95ZnYyRGYvdzVQMTI0ZmRxUkloK2ZBalFPa2ZHVS9jWXhEQT09Cg==",
       "url": "https://github.com/Creed1k3/site-optimizer/releases/latest/download/installer.exe"
     }
   }

@@ -1,6 +1,6 @@
 [package]
 name = "site-optimizer"
-version = "0.7.1"
+version = "0.7.2"
 description = "Site media optimizer"
 authors = ["Creed1k3"]
 edition = "2021"

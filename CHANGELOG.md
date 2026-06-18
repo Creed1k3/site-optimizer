@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.2
+
+- fixed the worker completion checkmark rendering rotated (it now sits upright)
+- the worker pool grid no longer collapses to a single cell between folders during batch optimization — the thread count stays stable
+
 ## 0.7.1
 
 - made the initial window slightly narrower and taller for a more comfortable layout

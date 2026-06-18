@@ -247,6 +247,29 @@ interface WhatsNewEntry {
 // "What's new" content shown once after upgrading to a new version.
 // Add an entry here per release that deserves a highlight screen.
 const WHATS_NEW: Record<string, WhatsNewEntry> = {
+  "0.7.2": {
+    title: { ru: "Что нового в v0.7.2", en: "What's new in v0.7.2" },
+    subtitle: {
+      ru: "Исправления в пуле потоков по вашим отзывам",
+      en: "Worker-pool fixes based on your feedback"
+    },
+    sections: [
+      {
+        icon: "spark",
+        heading: { ru: "Пул потоков", en: "Worker pool" },
+        items: [
+          {
+            ru: "Галочка при завершении потока теперь стоит ровно, а не повёрнута на бок.",
+            en: "The completion checkmark on a worker now sits upright instead of being rotated."
+          },
+          {
+            ru: "Сетка потоков больше не схлопывается до одной ячейки между папками при пакетной оптимизации — количество потоков остаётся стабильным.",
+            en: "The worker grid no longer collapses to a single cell between folders during batch optimization — the thread count stays stable."
+          }
+        ]
+      }
+    ]
+  },
   "0.7.1": {
     title: { ru: "Что нового в v0.7.1", en: "What's new in v0.7.1" },
     subtitle: {
@@ -2224,7 +2247,7 @@ export default function App() {
                   done={progress.done}
                   total={progress.total}
                   recentFiles={[...floatingFiles.map((f) => f.name), ...(currentFile ? [currentFile] : [])]}
-                  threads={lanes.length || workerThreads}
+                  threads={Math.max(workerThreads, lanes.length)}
                   lanes={lanes.length ? lanes : undefined}
                   running={!batchPaused}
                   locale={locale}
