@@ -724,7 +724,16 @@ async fn optimize_site(
 #[tauri::command]
 async fn export_as_zip(app: AppHandle, work_dir: String, original_path: String) -> Result<String, String> {
     let orig = Path::new(&original_path);
-    let stem = orig.file_stem().unwrap_or_default().to_string_lossy().to_string();
+    // Strip only a genuine ".zip" extension. For a folder input exported as a
+    // zip, the name may contain dots (e.g. "web2.zip_192213") that are NOT a
+    // real extension — file_stem() would collapse it to "web2" and make every
+    // similar folder collide on the same "web2_optimized.zip".
+    let is_zip = orig.extension().map(|e| e.eq_ignore_ascii_case("zip")).unwrap_or(false);
+    let stem = if is_zip {
+        orig.file_stem().unwrap_or_default().to_string_lossy().to_string()
+    } else {
+        orig.file_name().unwrap_or_default().to_string_lossy().to_string()
+    };
     let parent = orig.parent().unwrap_or(Path::new("."));
     let out_zip = parent.join(format!("{}_optimized.zip", stem))
         .to_string_lossy().to_string();
@@ -738,10 +747,17 @@ async fn export_as_zip(app: AppHandle, work_dir: String, original_path: String) 
 #[tauri::command]
 async fn export_as_folder(app: AppHandle, work_dir: String, original_path: String) -> Result<String, String> {
     let orig = Path::new(&original_path);
-    let name = orig.file_stem()
-        .or_else(|| orig.file_name())
-        .unwrap_or_default()
-        .to_string_lossy().to_string();
+    // Strip only a genuine ".zip" extension (zip input → folder output). A
+    // folder input is not a file, so a dot in its name (e.g. "web2.zip_192213")
+    // is part of the name, not an extension — file_stem() would collapse it to
+    // "web2" and make every similar folder export to the same "web2_optimized"
+    // dir and overwrite each other.
+    let is_zip = orig.extension().map(|e| e.eq_ignore_ascii_case("zip")).unwrap_or(false);
+    let name = if is_zip {
+        orig.file_stem().unwrap_or_default().to_string_lossy().to_string()
+    } else {
+        orig.file_name().unwrap_or_default().to_string_lossy().to_string()
+    };
     let parent = orig.parent().unwrap_or(Path::new("."));
     let out_dir = parent.join(format!("{}_optimized", name))
         .to_string_lossy().to_string();

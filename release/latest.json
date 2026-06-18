@@ -1,10 +1,10 @@
 {
-  "version": "0.7.2",
-  "notes": "Site Optimizer 0.7.2\n\n• Галочка при завершении потока теперь стоит ровно, а не повёрнута на бок.\n• Сетка потоков больше не схлопывается до одной ячейки между папками при пакетной оптимизации — количество потоков остаётся стабильным.",
-  "pub_date": "2026-06-18T15:22:11.000Z",
+  "version": "0.7.3",
+  "notes": "Site Optimizer 0.7.3\n\n• Папки с похожими именами (например «web2.zip_192213» и «web2.zip_192250») больше не сохраняются в одну общую папку «web2_optimized» и не затирают друг друга — каждая получает отдельный результат с полным именем.",
+  "pub_date": "2026-06-18T19:33:16.000Z",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTNFhsNG1vRTVvbUdwUWpHUVJTNFhGUTFPWmFkZ2t1a0FCNytpTGxDRnp3SnVzQ2ttTmVuNlF3MURMRDhCNG40b2R2d09aWEFCcVZNOFFDekw4ekhXWVN2SWJWNXlkU2c4PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzgxNzk2MTAyCWZpbGU6U2l0ZSBPcHRpbWl6ZXJfMC43LjJfeDY0LXNldHVwLmV4ZQpjd2dQbXI4cDVpeFNVQXk4RlR6d1hjU1Y5UVh4MHo1RjU5cG9rOUZPVldJZE96a2ZNcm95ZnYyRGYvdzVQMTI0ZmRxUkloK2ZBalFPa2ZHVS9jWXhEQT09Cg==",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTNFhsNG1vRTVvbUZDdzIzUGptWUJKeVhxblN1MklVamhoRUJCK3RqT0kvWUQyUCsrdDZWTGlibXJoQ0JxeGljdndIcmY5bEFubTBaWUlLQjVpdnRDUEEzMTdsaEVxc3dzPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzgxODExMTgzCWZpbGU6U2l0ZSBPcHRpbWl6ZXJfMC43LjNfeDY0LXNldHVwLmV4ZQpYMWNyb3FHUXFhVytBM3Mxd0VVbkNIVjV6akw2VFZWbEdFMklNTUFLdEVEZWlUU0FrY3NGdERUTGlldjc4SFBqNjBNYjM2VENDYmJDdkMxSmVpZ2tDUT09Cg==",
       "url": "https://github.com/Creed1k3/site-optimizer/releases/latest/download/installer.exe"
     }
   }

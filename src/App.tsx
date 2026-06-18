@@ -233,7 +233,7 @@ const translations = {
 } as const;
 
 interface WhatsNewSection {
-  icon: "max" | "spark" | "doc" | "gear";
+  icon: "max" | "spark" | "doc" | "gear" | "folder";
   heading: { ru: string; en: string };
   items: { ru: string; en: string }[];
 }
@@ -247,6 +247,25 @@ interface WhatsNewEntry {
 // "What's new" content shown once after upgrading to a new version.
 // Add an entry here per release that deserves a highlight screen.
 const WHATS_NEW: Record<string, WhatsNewEntry> = {
+  "0.7.3": {
+    title: { ru: "Что нового в v0.7.3", en: "What's new in v0.7.3" },
+    subtitle: {
+      ru: "Исправлено объединение похожих папок в одну",
+      en: "Fixed similar folders merging into one"
+    },
+    sections: [
+      {
+        icon: "folder",
+        heading: { ru: "Экспорт папок", en: "Folder export" },
+        items: [
+          {
+            ru: "Папки с похожими именами (например «web2.zip_192213» и «web2.zip_192250») больше не сохраняются в одну общую папку «web2_optimized» и не затирают друг друга — каждая папка сохраняет полное имя и получает отдельный результат.",
+            en: "Folders with similar names (e.g. \"web2.zip_192213\" and \"web2.zip_192250\") no longer export into one shared \"web2_optimized\" folder and overwrite each other — each keeps its full name and gets a separate output."
+          }
+        ]
+      }
+    ]
+  },
   "0.7.2": {
     title: { ru: "Что нового в v0.7.2", en: "What's new in v0.7.2" },
     subtitle: {
@@ -1475,6 +1494,12 @@ export default function App() {
   const isBusyPhase = phase === "preparing" || phase === "running" || phase === "exporting" || phase === "batching";
   // visible worker count — bound to host concurrency (ready to swap for a real value)
   const workerThreads = Math.max(2, Math.min(8, (typeof navigator !== "undefined" && navigator.hardwareConcurrency) || 4));
+  // Predicted output base name — mirror the backend: strip only a genuine ".zip"
+  // extension. A folder name with dots (e.g. "web2.zip_192213") is kept whole so
+  // the preview matches the real per-folder output and isn't collapsed to "web2".
+  const outputBaseName = inputPath
+    ? (inputMode === "zip" ? inputPath.replace(/\.zip$/i, "") : inputPath)
+    : "…";
   const pauseLabel = locale === "ru" ? "\u041f\u0430\u0443\u0437\u0430" : "Pause";
   const resumeLabel = locale === "ru" ? "\u041f\u0440\u043e\u0434\u043e\u043b\u0436\u0438\u0442\u044c" : "Resume";
   const stopLabel = locale === "ru" ? "\u041e\u0441\u0442\u0430\u043d\u043e\u0432\u0438\u0442\u044c" : "Stop";
@@ -2349,7 +2374,7 @@ export default function App() {
                   <span className="fmt-ic">{Icon.zip({ size: 18 })}</span>
                   <span className="fmt-meta">
                     <span className="fmt-t">{t.inputZip}</span>
-                    <span className="fmt-p mono">{t.outputZip(`${inputPath?.replace(/(\.[^.]+)?$/, "") ?? "…"}_optimized.zip`)}</span>
+                    <span className="fmt-p mono">{t.outputZip(`${outputBaseName}_optimized.zip`)}</span>
                   </span>
                   <span className="fmt-tag mono">.zip</span>
                 </button>
@@ -2362,7 +2387,7 @@ export default function App() {
                   <span className="fmt-ic">{Icon.folder({ size: 18 })}</span>
                   <span className="fmt-meta">
                     <span className="fmt-t">{t.inputFolder}</span>
-                    <span className="fmt-p mono">{t.outputFolder(`${inputPath?.replace(/(\.[^.]+)?$/, "") ?? "…"}_optimized/`)}</span>
+                    <span className="fmt-p mono">{t.outputFolder(`${outputBaseName}_optimized/`)}</span>
                   </span>
                   <span className="fmt-tag mono">dir</span>
                 </button>

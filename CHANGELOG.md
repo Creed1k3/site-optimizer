@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.3
+
+- fixed similarly-named folders (e.g. `web2.zip_192213`, `web2.zip_192250`) all exporting to the same `web2_optimized` output and overwriting each other — each folder now keeps its full name and gets a distinct output
+- the export format preview now shows the real output name instead of collapsing dotted folder names
+
 ## 0.7.2
 
 - fixed the worker completion checkmark rendering rotated (it now sits upright)
